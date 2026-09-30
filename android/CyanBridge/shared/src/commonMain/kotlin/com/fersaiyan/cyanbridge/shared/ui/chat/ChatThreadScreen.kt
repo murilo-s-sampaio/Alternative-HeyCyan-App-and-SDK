@@ -121,6 +121,8 @@ fun ChatThreadScreen(
     onRecordAudio: () -> Unit,
     onClearAttachments: () -> Unit,
     onDestinationSelected: (AppDestination) -> Unit,
+    // Hosts that already draw the app-level navigation shell (iOS) pass false.
+    showNavigationBar: Boolean = true,
 ) {
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
 
@@ -173,7 +175,7 @@ fun ChatThreadScreen(
                     onClearAttachments = onClearAttachments,
                     modifier = Modifier.imePadding(),
                 )
-                if (!imeVisible) {
+                if (!imeVisible && showNavigationBar) {
                     ChatNavigationBar(onDestinationSelected = onDestinationSelected)
                 }
             }

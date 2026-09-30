@@ -1,5 +1,8 @@
 package com.fersaiyan.cyanbridge.shared.platform
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.window.ComposeUIViewController
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -26,17 +29,20 @@ import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardAction
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardUiState
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesTransferUiState
 import com.fersaiyan.cyanbridge.shared.devices.DeviceClass
+import com.fersaiyan.cyanbridge.shared.devices.ScannedDevice
 import com.fersaiyan.cyanbridge.shared.media.IosMediaTransfer
 import com.fersaiyan.cyanbridge.shared.navigation.AppDestination
 import com.fersaiyan.cyanbridge.shared.network.P2pConnectionState
 import com.fersaiyan.cyanbridge.shared.network.P2pPeer
 import com.fersaiyan.cyanbridge.shared.network.WifiP2pManager
+import com.fersaiyan.cyanbridge.shared.persistence.DeviceProfileEntity
 import com.fersaiyan.cyanbridge.shared.persistence.IosChatRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosDeviceProfileRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosMediaRecordRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosMemoryVaultRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosNotesRepository
 import com.fersaiyan.cyanbridge.shared.ui.CyanBridgeApp
+import com.fersaiyan.cyanbridge.shared.ui.DeviceBindScreen
 import com.fersaiyan.cyanbridge.shared.ui.theme.CyanBridgeMaterialTheme
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.refTo
@@ -56,6 +62,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import platform.NetworkExtension.NEHotspotConfiguration
@@ -70,6 +77,7 @@ import platform.Foundation.base64EncodedStringWithOptions
 private const val DEFAULT_RELAY_URL = "https://cyanbridge.vercel.app"
 private const val IOS_TRANSFER_IP_TIMEOUT_MS = 15_000L
 private const val IOS_HOST_CREDENTIAL_TIMEOUT_MS = 10_000L
+private const val IOS_BLE_CONNECT_TIMEOUT_MS = 20_000L
 private val IOS_TRANSFER_MODE_COMMAND = byteArrayOf(0x02, 0x01, 0x04)
 private val IOS_PRO_SUBSCRIPTION_STATE = ProSubscriptionUiState(
     status = "iOS checkout is unavailable until account sign-in and verified billing are implemented. Pro is not active.",
@@ -127,24 +135,46 @@ private fun IosCyanBridgeApp(
     }
     var appearanceSettings by remember { mutableStateOf(appearanceStore.load()) }
 
+    val deviceBindState by controller.deviceBindState.collectAsState()
+
     CyanBridgeMaterialTheme(settings = appearanceSettings) {
-        CyanBridgeApp(
-            initialDestination = initialDestination,
-            dashboardState = dashboardState,
-            onDashboardAction = controller::handle,
-            appearanceSettings = appearanceSettings,
-            onAppearanceSettingsChange = { nextSettings ->
-                appearanceStore.save(nextSettings)
-                appearanceSettings = appearanceStore.load()
-            },
-            onAppearanceReset = {
-                appearanceStore.reset()
-                appearanceSettings = appearanceStore.load()
-            },
-            useSharedDestinations = true,
-            proSubscriptionState = IOS_PRO_SUBSCRIPTION_STATE,
-            onProSubscriptionAction = ::iosProSubscriptionActionStatus,
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            CyanBridgeApp(
+                initialDestination = initialDestination,
+                dashboardState = dashboardState,
+                onDashboardAction = controller::handle,
+                appearanceSettings = appearanceSettings,
+                onAppearanceSettingsChange = { nextSettings ->
+                    appearanceStore.save(nextSettings)
+                    appearanceSettings = appearanceStore.load()
+                },
+                onAppearanceReset = {
+                    appearanceStore.reset()
+                    appearanceSettings = appearanceStore.load()
+                },
+                useSharedDestinations = true,
+                proSubscriptionState = IOS_PRO_SUBSCRIPTION_STATE,
+                onProSubscriptionAction = ::iosProSubscriptionActionStatus,
+            )
+            // Android opens DeviceBindActivity for Scan; iOS shows the same shared screen on top.
+            deviceBindState?.let { bind ->
+                DeviceBindScreen(
+                    devices = bind.devices,
+                    isScanning = bind.isScanning,
+                    connectingDevice = bind.connectingDevice,
+                    selectedClass = bind.selectedClass,
+                    onScan = controller::startDeviceScan,
+                    onPairMetaGlasses = { controller.closeDeviceBind("Meta glasses pairing is not available on iOS yet") },
+                    onPairMentraGlasses = { controller.closeDeviceBind("Mentra Live pairing is not available on iOS yet") },
+                    onSelectDevice = controller::selectDevice,
+                    onSelectedClassChange = controller::selectDeviceClass,
+                    onConfirmConnection = controller::confirmConnection,
+                    onConfirmManualProtocol = controller::confirmManualProtocol,
+                    onDismissConnection = controller::dismissConnection,
+                    onBack = { controller.closeDeviceBind() },
+                )
+            }
+        }
     }
 }
 
@@ -301,6 +331,33 @@ private class IosWifiP2pManager : WifiP2pManager {
     }
 }
 
+/** State for the shared DeviceBindScreen, shown over the dashboard while pairing. */
+private data class IosDeviceBindUiState(
+    val devices: List<ScannedDevice> = emptyList(),
+    val isScanning: Boolean = false,
+    val connectingDevice: ScannedDevice? = null,
+    val selectedClass: DeviceClass = DeviceClass.HEY_CYAN,
+)
+
+/** Named devices first, strongest signal first, like the Android bind list. */
+private fun List<ScannedDevice>.upsert(identifier: String, name: String?, rssi: Int): List<ScannedDevice> {
+    val sanitizedName = name?.trim()?.takeIf { it.isNotEmpty() }
+    val existing = firstOrNull { it.macAddress == identifier }
+    val updated = existing?.copy(
+        advertisedName = existing.advertisedName ?: sanitizedName,
+        rssi = rssi,
+    ) ?: ScannedDevice(
+        macAddress = identifier,
+        advertisedName = sanitizedName,
+        rssi = rssi,
+        detectedClass = DeviceClass.UNKNOWN,
+        selectedClass = null,
+        userOverridden = false,
+    )
+    return (filterNot { it.macAddress == identifier } + updated)
+        .sortedWith(compareBy<ScannedDevice> { it.advertisedName == null }.thenByDescending { it.rssi })
+}
+
 /**
  * Small iOS host controller for the shared dashboard. It owns platform jobs so
  * the composable remains a pure renderer, matching the Android callback shape.
@@ -323,6 +380,9 @@ private class IosAppController {
         ),
     )
     val dashboardState: StateFlow<GlassesDashboardUiState> = _dashboardState.asStateFlow()
+
+    private val _deviceBindState = MutableStateFlow<IosDeviceBindUiState?>(null)
+    val deviceBindState: StateFlow<IosDeviceBindUiState?> = _deviceBindState.asStateFlow()
 
     private var scanJob: Job? = null
     private var syncJob: Job? = null
@@ -413,7 +473,7 @@ private class IosAppController {
 
     fun handle(action: GlassesDashboardAction) {
         when (action) {
-            GlassesDashboardAction.Scan -> startScan()
+            GlassesDashboardAction.Scan -> openDeviceBind()
             GlassesDashboardAction.Reconnect -> reconnect()
             GlassesDashboardAction.Disconnect -> scope.launch { bleManager.disconnect() }
             GlassesDashboardAction.RequestBattery -> requestBattery()
@@ -429,34 +489,114 @@ private class IosAppController {
         }
     }
 
-    private fun startScan() {
+    private fun openDeviceBind() {
+        _deviceBindState.value = IosDeviceBindUiState()
+        updateState { it.copy(agentLastError = "") }
+        startDeviceScan()
+    }
+
+    fun startDeviceScan() {
         scanJob?.cancel()
-        updateState { it.copy(connectionLabel = "Scanning for glasses", agentLastError = "") }
+        updateBind { it.copy(devices = emptyList(), isScanning = true) }
         scanJob = scope.launch {
-            var found = false
-            bleManager.startScan(timeoutMs = 15_000L).collect { device ->
-                found = true
-                lastDiscoveredIdentifier = device.identifier
-                updateState {
-                    it.copy(connectionLabel = "Found ${device.name ?: device.identifier}")
+            try {
+                bleManager.startScan(timeoutMs = 15_000L).collect { found ->
+                    updateBind { bind -> bind.copy(devices = bind.devices.upsert(found.identifier, found.name, found.rssi)) }
                 }
-            }
-            if (!found) {
-                updateState { it.copy(connectionLabel = "No glasses found") }
+            } finally {
+                updateBind { it.copy(isScanning = false) }
             }
         }
     }
 
-    private fun reconnect() {
-        val identifier = lastDiscoveredIdentifier
-        if (identifier == null) {
-            updateState { it.copy(agentLastError = "Scan first so iOS can identify the glasses") }
-            return
+    fun selectDevice(device: ScannedDevice) {
+        updateBind { it.copy(connectingDevice = device, selectedClass = DeviceClass.HEY_CYAN) }
+    }
+
+    fun selectDeviceClass(deviceClass: DeviceClass) {
+        updateBind { it.copy(selectedClass = deviceClass) }
+    }
+
+    fun dismissConnection() {
+        updateBind { it.copy(connectingDevice = null) }
+    }
+
+    fun closeDeviceBind(message: String = "") {
+        scanJob?.cancel()
+        bleManager.stopScan()
+        _deviceBindState.value = null
+        if (message.isNotEmpty()) updateState { it.copy(agentLastError = message) }
+    }
+
+    /** Mirrors DeviceBindActivity.confirmConnection for the classes the iOS host can drive. */
+    fun confirmConnection() {
+        val bind = _deviceBindState.value ?: return
+        val device = bind.connectingDevice ?: return
+        when (bind.selectedClass) {
+            DeviceClass.META_RAYBAN -> closeDeviceBind("Meta glasses require the native MWDAT adapter on iOS")
+            DeviceClass.GENERIC_AUDIO -> {
+                saveProfileAndConnect(device, DeviceClass.GENERIC_AUDIO, connect = false)
+            }
+            DeviceClass.MEIZU_MYVU -> saveProfileAndConnect(device, DeviceClass.MEIZU_MYVU)
+            // HEY_CYAN is the sentinel for the manual consumer picker handled by the screen.
+            else -> confirmManualProtocol(DeviceClass.HEY_CYAN)
         }
+    }
+
+    fun confirmManualProtocol(deviceClass: DeviceClass) {
+        val device = _deviceBindState.value?.connectingDevice ?: return
+        val normalized = when (deviceClass) {
+            DeviceClass.HEY_CYAN,
+            DeviceClass.EYEVUE,
+            DeviceClass.TUNEBUDS,
+            DeviceClass.MOYOUNG_W620,
+            -> deviceClass
+            else -> DeviceClass.HEY_CYAN
+        }
+        saveProfileAndConnect(device, normalized)
+    }
+
+    private fun saveProfileAndConnect(device: ScannedDevice, deviceClass: DeviceClass, connect: Boolean = true) {
+        closeDeviceBind()
+        selectedDeviceClass = deviceClass
+        lastDiscoveredIdentifier = device.macAddress
+        updateConnectionCapabilities()
         scope.launch {
-            runCatching { bleManager.connect(identifier) }
-                .onFailure { error -> updateState { it.copy(agentLastError = error.message ?: "Connection failed") } }
+            deviceProfileRepository.upsert(
+                DeviceProfileEntity(
+                    macAddress = device.macAddress,
+                    advertisedName = device.advertisedName,
+                    detectedClass = deviceClass.name,
+                    selectedClass = deviceClass.name,
+                    userOverridden = true,
+                    lastConnectedAt = platformCurrentTimeMillis(),
+                ),
+            )
+            if (connect) connectTo(device.macAddress)
         }
+    }
+
+    private suspend fun connectTo(identifier: String) {
+        runCatching { withTimeout(IOS_BLE_CONNECT_TIMEOUT_MS) { bleManager.connect(identifier) } }
+            .onFailure { error ->
+                updateState { it.copy(agentLastError = error.message ?: "Connection failed") }
+            }
+    }
+
+    private fun reconnect() {
+        scope.launch {
+            val identifier = lastDiscoveredIdentifier
+                ?: deviceProfileRepository.getAll().maxByOrNull { it.lastConnectedAt }?.macAddress
+            if (identifier == null) {
+                openDeviceBind()
+            } else {
+                connectTo(identifier)
+            }
+        }
+    }
+
+    private fun updateBind(transform: (IosDeviceBindUiState) -> IosDeviceBindUiState) {
+        _deviceBindState.value = _deviceBindState.value?.let(transform)
     }
 
     private fun requestBattery() {

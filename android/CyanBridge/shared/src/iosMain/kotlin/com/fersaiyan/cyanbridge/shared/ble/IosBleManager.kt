@@ -35,6 +35,7 @@ import platform.CoreBluetooth.CBService
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
+import platform.Foundation.NSUUID
 import platform.darwin.NSObject
 import com.fersaiyan.cyanbridge.shared.platform.PlatformLogger
 import com.fersaiyan.cyanbridge.shared.platform.toIosNSData
@@ -120,7 +121,14 @@ class IosBleManager : BleManager {
     override suspend fun connect(identifier: String) {
         check(central.state == CBManagerStatePoweredOn) { "Bluetooth is not powered on" }
         check(pendingConnect == null) { "A BLE connection is already pending" }
+        // After an app restart the saved profile identifier is known but not yet discovered.
         val peripheral = peripherals[identifier]
+            ?: NSUUID(uUIDString = identifier).let { uuid ->
+                central.retrievePeripheralsWithIdentifiers(listOf(uuid))
+                    .filterIsInstance<CBPeripheral>()
+                    .firstOrNull()
+                    ?.also { peripherals[identifier] = it }
+            }
             ?: throw IllegalArgumentException("iOS BLE peripheral was not discovered: $identifier")
 
         suspendCancellableCoroutine<Unit> { continuation ->
@@ -128,6 +136,9 @@ class IosBleManager : BleManager {
             _connectionState.value = BleConnectionState.CONNECTING
             central.connectPeripheral(peripheral, options = null)
             continuation.invokeOnCancellation {
+                // A timed-out connect must not leave the manager stuck in "pending".
+                pendingConnect = null
+                _connectionState.value = BleConnectionState.DISCONNECTED
                 central.cancelPeripheralConnection(peripheral)
             }
         }

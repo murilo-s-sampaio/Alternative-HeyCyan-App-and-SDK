@@ -81,6 +81,8 @@ fun NotesChatsScreen(
     onChatAppearance: () -> Unit,
     onOpenNotesSettings: () -> Unit,
     onDestinationSelected: (AppDestination) -> Unit,
+    // Hosts that already draw the app-level navigation shell (iOS) pass false.
+    showNavigationBar: Boolean = true,
 ) {
     val tabs = NotesChatsTab.entries
     Scaffold(
@@ -113,7 +115,7 @@ fun NotesChatsScreen(
             )
         },
         bottomBar = {
-            NavigationBar(
+            if (showNavigationBar) NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 0.dp,
             ) {

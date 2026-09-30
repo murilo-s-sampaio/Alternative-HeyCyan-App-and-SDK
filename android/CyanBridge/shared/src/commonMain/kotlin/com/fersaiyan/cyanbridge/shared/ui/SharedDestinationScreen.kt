@@ -189,6 +189,7 @@ private fun SharedChatsDestination(onDestinationSelected: (AppDestination) -> Un
         onChatAppearance = {},
         onOpenNotesSettings = {},
         onDestinationSelected = onDestinationSelected,
+        showNavigationBar = false,
     )
 }
 
@@ -293,6 +294,7 @@ private fun SharedChatThreadDestination(
         onDestinationSelected = { destination ->
             if (destination == AppDestination.CHATS) onBack() else onDestinationSelected(destination)
         },
+        showNavigationBar = false,
     )
 }
 
@@ -353,6 +355,7 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
             onStopMeetingCapture = {},
             onDismissTranscript = {},
             onDestinationSelected = onDestinationSelected,
+            showNavigationBar = false,
         )
     }
 }
@@ -409,6 +412,7 @@ private fun SharedPluginsDestination(onDestinationSelected: (AppDestination) -> 
         onDestinationSelected = onDestinationSelected,
         nativePlugins = nativePlugins,
         onToggleNativePlugin = { _, _ -> },
+        showNavigationBar = false,
     )
 }
 
@@ -447,6 +451,7 @@ private fun SharedSettingsDestination(
             }
         },
         actions = actions,
+        showNavigationBar = false,
     )
 }
 

@@ -132,6 +132,8 @@ fun SettingsScreen(
     expandedSections: Set<SettingsSection>,
     onToggleSection: (SettingsSection) -> Unit,
     actions: SettingsScreenActions,
+    // Hosts that already draw the app-level navigation shell (iOS) pass false.
+    showNavigationBar: Boolean = true,
 ) {
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -147,7 +149,7 @@ fun SettingsScreen(
             )
         },
         bottomBar = {
-            NavigationBar(
+            if (showNavigationBar) NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 0.dp,
             ) {

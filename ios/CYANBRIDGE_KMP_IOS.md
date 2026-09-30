@@ -9,7 +9,7 @@
 - Shares appearance models, semantic icons, navigation destinations, chat models, immutable chat-thread presentation state, meeting-summary contracts, deterministic Markdown formatting, the offline rule-based summarizer, and shared Compose Multiplatform UI screens.
 - The KMP host now renders the shared Chats, Media, Plugins, and Settings destinations directly. Android keeps its existing Activity presenters unless it opts into the same shared route.
 - The iOS adapter now has a CoreBluetooth scan/connect/discovery path, standard battery/firmware characteristic reads, readiness-gated NEHotspotConfiguration hotspot joining, durable JSON-backed repositories, and the glasses `media.config`/file download flow.
-- iOS simulator targets use a dynamic framework (`isStatic = false`) for Skiko compatibility; the device target (`iosArm64`) uses a static framework.
+- All iOS targets use a dynamic framework (`isStatic = false`). The simulator needs it for Skiko compatibility, and the device needs it because `embedAndSignAppleFrameworkForXcode` embeds the framework in `Frameworks/`, where a static archive makes installation fail.
 - Leaves CoreBluetooth, NetworkExtension, Photos, audio, StoreKit, local inference, and QCSDK.framework calls in native adapters.
 - A shared `CyanBridgeKMPHost.xcscheme` is tracked in the Xcode project for reproducible CI builds.
 
@@ -100,7 +100,7 @@ The `MainViewController()` function is exported from the Kotlin/Native framework
 
 CMP on iOS uses Skiko (Skia) for rendering. Skiko ships as a static library (`.a`) for device targets but as a dynamic library (`.dylib`) for simulator targets. The `:shared` module is configured accordingly:
 
-- `iosArm64` (device): `isStatic = true` — static framework, no `.dylib` embedding needed.
+- `iosArm64` (device): `isStatic = false` — dynamic framework. A static archive gets copied into `Frameworks/` by `embedAndSignAppleFrameworkForXcode` and the device rejects the install (`MIInstallerErrorDomain` 73).
 - `iosSimulatorArm64` (simulator): `isStatic = false` — dynamic framework, Skiko `.dylib` is embedded in the `.app` bundle.
 - `iosX64` (Intel simulator): `isStatic = false` — same as above.
 
