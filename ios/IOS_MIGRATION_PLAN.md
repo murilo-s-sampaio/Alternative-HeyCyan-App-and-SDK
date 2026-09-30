@@ -151,6 +151,20 @@ Pagamento, assinatura Pro e cobrança ficam fora deste plano por decisão do pro
 
 ## Sprint 6 — Outros óculos e recursos avançados
 
+Status: parcial. 6.4 (EyeVue por Bluetooth) implementada; as demais dependem de algo que não existe neste repositório (ver notas).
+
+Notas:
+- 6.4: protocolo EyeVue portado para o código compartilhado, com testes. No iOS funcionam foto, vídeo, áudio, bateria, hora, detecção de uso, duração de gravação e perguntas por foto (AA15). A sincronização de mídia do EyeVue por Wi-Fi ainda não foi portada.
+- 6.1/6.2 Meta, 6.3 Meizu, 6.5 MoYoung e 6.6 Mentra: o Android usa SDKs fechados de cada fabricante (MWDAT, `com.myvu.client`, MoYoung, Mentra). É preciso obter os SDKs iOS equivalentes; o da Meta exige cadastro de desenvolvedor.
+- 6.7 Prévia ao vivo: os óculos transmitem RTSP, que o player do iOS não abre; precisa de uma biblioteca externa (ex.: VLCKit).
+- 6.8 Gemini Live: usa a cota da assinatura Pro, que ficou fora do plano junto com o pagamento.
+- 6.9 IA local (estudo): viável. llama.cpp compila para iOS com aceleração Metal e LiteRT tem runtime iOS; o limite é memória (modelos de 1–3 B parâmetros quantizados cabem em iPhones com 6 GB+). Estimativa: sprint própria.
+- 6.10: a importação de ChatGPT e Claude já está nas Configurações (4.7). Obsidian depende de acesso a pastas do app Arquivos e fica pendente.
+
+## Testes automáticos das partes portadas
+
+`./gradlew :shared:portabilityTest` roda `IosMigrationPortsTest` (protocolo EyeVue, conversão Ogg, classificador de aparelhos, importador ChatGPT/Claude e catálogo de plugins). Esses testes compilam o código compartilhado fora do iOS, o que também confere que o Android continua compilando essa parte.
+
 | # | Tarefa | Android (origem) | iOS (destino) |
 |---|---|---|---|
 | 6.1 | Meta Ray-Ban: pareamento e registro | MWDAT Android | SDK Meta Wearables para iOS |

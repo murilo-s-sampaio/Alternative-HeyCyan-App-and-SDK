@@ -37,6 +37,7 @@ import platform.Foundation.NSError
 import platform.Foundation.NSNumber
 import platform.Foundation.NSUUID
 import platform.darwin.NSObject
+import com.fersaiyan.cyanbridge.shared.devices.BleDeviceClassifier
 import com.fersaiyan.cyanbridge.shared.platform.PlatformLogger
 import com.fersaiyan.cyanbridge.shared.platform.toIosNSData
 import kotlin.coroutines.resume
@@ -80,6 +81,9 @@ class IosBleManager : BleManager {
     /** QCSDK bridge from the Swift host; HeyCyan sessions hand the peripheral to it. */
     var vendorBridge: VendorGlassesBridge? = null
     var attachVendorOnConnect: Boolean = false
+
+    /** Protocols with a known command characteristic (e.g. Eyevue AA13) write only to it. */
+    var preferredWriteCharacteristicUuid: String? = null
     private val _isVendorAttached = MutableStateFlow(false)
     val isVendorAttached: StateFlow<Boolean> = _isVendorAttached.asStateFlow()
     private val centralDelegate = CentralDelegate()
@@ -419,9 +423,15 @@ class IosBleManager : BleManager {
                     notifyCharacteristics[characteristic.UUID.UUIDString] = characteristic
                     peripheral.setNotifyValue(true, forCharacteristic = characteristic)
                 }
-                if (writeCharacteristic == null &&
-                    (characteristic.hasProperty(CBCharacteristicPropertyWrite) ||
-                        characteristic.hasProperty(CBCharacteristicPropertyWriteWithoutResponse))
+                val writable = characteristic.hasProperty(CBCharacteristicPropertyWrite) ||
+                    characteristic.hasProperty(CBCharacteristicPropertyWriteWithoutResponse)
+                val preferred = preferredWriteCharacteristicUuid
+                if (writable && if (preferred == null) {
+                        writeCharacteristic == null
+                    } else {
+                        BleDeviceClassifier.normalizeUuid(characteristic.UUID.UUIDString) ==
+                            BleDeviceClassifier.normalizeUuid(preferred)
+                    }
                 ) {
                     writeCharacteristic = characteristic
                 }

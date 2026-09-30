@@ -23,6 +23,8 @@ import com.fersaiyan.cyanbridge.shared.appearance.AppearanceSettingsStore
 import com.fersaiyan.cyanbridge.shared.billing.ProSubscriptionAction
 import com.fersaiyan.cyanbridge.shared.billing.ProSubscriptionUiState
 import com.fersaiyan.cyanbridge.shared.ble.IosBleManager
+import com.fersaiyan.cyanbridge.shared.ble.IosEyevueSession
+import com.fersaiyan.cyanbridge.shared.devices.eyevue.EyevueProtocol
 import com.fersaiyan.cyanbridge.shared.ble.BleConnectionState
 import com.fersaiyan.cyanbridge.shared.ble.BleNotificationListener
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesEventListener
@@ -479,6 +481,17 @@ private class IosAppController {
     private val voiceAiService = IosRelayVoiceAiService()
     private val imageAiService = IosRelayImageAiService()
     private val meetingRecorder = IosMeetingRecorder(voiceAiService, chatAiService, notesRepository)
+    private val eyevue = IosEyevueSession(
+        bleManager = bleManager,
+        onBattery = { battery ->
+            scope.launch { updateState { it.copy(batteryPercent = battery.percent, showBattery = true) } }
+        },
+        onWifiSsid = { ssid ->
+            scope.launch { updateState { it.copy(transfer = it.transfer.copy(detail = "Eyevue Wi-Fi: $ssid")) } }
+        },
+        onPhoto = { image -> scope.launch { answerImageQuestion(image) } },
+    )
+    private val isEyevueConnected get() = isBleConnected && selectedDeviceClass == DeviceClass.EYEVUE
     private val pluginsRuntime = IosPluginsRuntime(
         chatAiService = chatAiService,
         imageAiService = imageAiService,
@@ -616,6 +629,9 @@ private class IosAppController {
             bleManager.connectionState.collect { connectionState ->
                 val wasBleConnected = isBleConnected
                 isBleConnected = connectionState == BleConnectionState.CONNECTED
+                if (!wasBleConnected && isBleConnected && selectedDeviceClass == DeviceClass.EYEVUE) {
+                    scope.launch { eyevue.onConnected() }
+                }
                 if (wasBleConnected && connectionState == BleConnectionState.DISCONNECTED) {
                     IosTransferModeConfiguration.clearHotspot()
                 }
@@ -651,6 +667,7 @@ private class IosAppController {
                             selectedDeviceClass == DeviceClass.META_RAYBAN,
                     )
                 }
+                updateConnectionCapabilities()
             }
         }
     }
@@ -673,6 +690,7 @@ private class IosAppController {
     }
 
     fun handle(action: GlassesDashboardAction) {
+        if (isEyevueConnected && handleEyevue(action)) return
         when (action) {
             GlassesDashboardAction.Scan -> openDeviceBind()
             GlassesDashboardAction.Reconnect -> reconnect()
@@ -743,6 +761,47 @@ private class IosAppController {
             is GlassesDashboardAction.Navigate -> Unit
             else -> updateState { it.copy(agentLastError = "This control is not implemented in the iOS host yet") }
         }
+    }
+
+    /** Eyevue actions over BLE GATT (Android: EyevueManager); false when not an Eyevue action. */
+    private fun handleEyevue(action: GlassesDashboardAction): Boolean {
+        val job: (suspend () -> Unit)? = when (action) {
+            GlassesDashboardAction.CapturePhoto -> ({ eyevue.takePhoto(highQuality = true) })
+            GlassesDashboardAction.TestImageQuestion -> ({
+                updateState { it.copy(agentLastError = "Waiting for the glasses photo…") }
+                eyevue.takePhoto(highQuality = _dashboardState.value.imageThumbnailQualitySdkValue >= 5)
+            })
+            GlassesDashboardAction.ToggleVideo -> ({
+                val start = !_dashboardState.value.isVideoRecording
+                if (eyevue.setVideoRecording(start)) updateState { it.copy(isVideoRecording = start) }
+            })
+            GlassesDashboardAction.StartAudioRecording -> ({
+                val start = !_dashboardState.value.isAudioRecording
+                if (eyevue.setAudioRecording(start)) updateState { it.copy(isAudioRecording = start) }
+            })
+            GlassesDashboardAction.RequestBattery -> ({ eyevue.requestBattery() })
+            GlassesDashboardAction.SyncTime -> ({
+                val synced = eyevue.syncTime()
+                updateState { it.copy(agentLastError = if (synced) "Glasses clock synced" else "Clock sync failed") }
+            })
+            is GlassesDashboardAction.SetWearingDetection -> ({
+                if (eyevue.setWearingDetection(action.enabled)) updateState { it.copy(wearingDetectionEnabled = action.enabled) }
+            })
+            is GlassesDashboardAction.SetVideoRecordingDuration -> ({
+                if (eyevue.setRecordingDuration(action.seconds)) {
+                    updateState { it.copy(videoRecordingDurationSeconds = action.seconds) }
+                }
+            })
+            is GlassesDashboardAction.SetAudioRecordingDuration -> ({
+                if (eyevue.setRecordingDuration(action.seconds)) {
+                    updateState { it.copy(audioRecordingDurationSeconds = action.seconds) }
+                }
+            })
+            else -> null
+        }
+        job ?: return false
+        scope.launch { job() }
+        return true
     }
 
     private fun openDeviceBind() {
@@ -1229,6 +1288,8 @@ private class IosAppController {
     private fun applySelectedClass(deviceClass: DeviceClass) {
         selectedDeviceClass = deviceClass
         bleManager.attachVendorOnConnect = deviceClass == DeviceClass.HEY_CYAN
+        bleManager.preferredWriteCharacteristicUuid =
+            EyevueProtocol.COMMAND_WRITE_UUID.takeIf { deviceClass == DeviceClass.EYEVUE }
         updateState { it.copy(deviceClassLabel = deviceClass.displayName()) }
         updateConnectionCapabilities()
     }
@@ -1431,6 +1492,12 @@ private class IosAppController {
                 showAdvancedDeveloperTools = showHeyCyan,
                 showAdvancedOta = showHeyCyan,
                 showMetaRaybanControls = isBleConnected && selectedDeviceClass == DeviceClass.META_RAYBAN,
+                showEyevueControls = isEyevueConnected,
+                videoRecordingDurationOptionsSeconds = if (isEyevueConnected) {
+                    VIDEO_DURATION_OPTIONS_SECONDS
+                } else {
+                    state.videoRecordingDurationOptionsSeconds
+                },
             )
         }
     }
