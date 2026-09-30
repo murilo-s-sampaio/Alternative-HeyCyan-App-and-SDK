@@ -479,6 +479,14 @@ private class IosAppController {
     private val voiceAiService = IosRelayVoiceAiService()
     private val imageAiService = IosRelayImageAiService()
     private val meetingRecorder = IosMeetingRecorder(voiceAiService, chatAiService, notesRepository)
+    private val pluginsRuntime = IosPluginsRuntime(
+        chatAiService = chatAiService,
+        imageAiService = imageAiService,
+        notesRepository = notesRepository,
+        relayBaseUrl = DEFAULT_RELAY_URL,
+        onShortcutChanged = { shortcut -> updateState { it.copy(nativePluginShortcut = shortcut) } },
+        requestGlassesPhoto = { vendor?.awaitModeAccepted(VendorGlassesMode.AI_PHOTO) ?: false },
+    )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _dashboardState = MutableStateFlow(
@@ -519,6 +527,17 @@ private class IosAppController {
         IosMediaPlatform.installSharedMediaHooks()
         IosChatPlatform.installSharedChatHooks()
         SharedRecordingsHooks.provider = meetingRecorder
+        SharedPluginsHooks.platform = pluginsRuntime
+        // Firmware flashing needs account auth and hardware validation on iOS (plan tasks 5.7-5.9).
+        updateState {
+            it.copy(
+                ota = com.fersaiyan.cyanbridge.shared.glasses.OtaSectionUiState(
+                    stateLabel = "Not available on iOS yet",
+                    detail = "Firmware updates still require the Android app.",
+                    canStart = false,
+                ),
+            )
+        }
         SharedSettingsHooks.platform = IosSettingsPlatform(
             chatRepository = chatRepository,
             notesRepository = notesRepository,
@@ -563,7 +582,11 @@ private class IosAppController {
             override fun onAiImage(data: NSData) {
                 // Fired by the glasses' AI photo button and by TestImageQuestion.
                 val bytes = data.toKotlinBytes()
-                scope.launch { answerImageQuestion(bytes) }
+                if (pluginsRuntime.isWalkingAidActive) {
+                    pluginsRuntime.onGlassesImage(bytes)
+                } else {
+                    scope.launch { answerImageQuestion(bytes) }
+                }
             }
         })
         scope.launch {
@@ -676,6 +699,12 @@ private class IosAppController {
             }
             GlassesDashboardAction.SyncTime -> syncTime()
             GlassesDashboardAction.RequestVolume -> requestVolume()
+            is GlassesDashboardAction.RunNativePluginShortcut -> pluginsRuntime.runShortcut(action.action)
+            is GlassesDashboardAction.RequestOtaFirmware,
+            GlassesDashboardAction.CancelOta,
+            GlassesDashboardAction.DumpOtaInfo,
+            GlassesDashboardAction.TestPullOta,
+            -> updateState { it.copy(agentLastError = "Firmware updates still require the Android app") }
             is GlassesDashboardAction.SelectMeetingTimer -> updateState {
                 it.copy(meeting = it.meeting.copy(timerIndex = action.index.coerceIn(0, MEETING_TIMER_SECONDS.lastIndex)))
             }

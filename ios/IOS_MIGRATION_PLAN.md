@@ -124,6 +124,16 @@ Notas:
 
 ## Sprint 5 — Plugins e atualização de firmware
 
+Status: parcial. 5.1–5.6 e 5.10 implementadas; compilam e a aba Plugins foi conferida no simulador. 5.7–5.9 adiadas (ver notas). Teste dos plugins com os óculos pendente.
+
+Notas:
+- 5.1: o Walking Aid do Android usa um modelo de visão local; no iOS ele pede uma foto aos óculos a cada 8 segundos e a IA do relay descreve obstáculos, com aviso falado.
+- 5.2/5.5/5.6/5.3: os plugins de fala usam reconhecimento de voz no próprio iPhone (`SFSpeechRecognizer`) com o microfone Bluetooth dos óculos. Um plugin roda por vez; o plugin ativo aparece como atalho na aba Óculos com o botão Parar.
+- 5.3: tarefas vão para a nota "Errands"; as que têm horário viram notificações locais.
+- 5.4: Local Agent e AutoDiary aparecem como "Somente Android". Auto Audio e Visual Diary saíram da lista do iOS.
+- 5.7–5.9 adiadas: o catálogo de firmware exige login da conta (fora do plano junto com o pagamento), e gravar firmware nos dois chips sem teste em hardware pode inutilizar os óculos. A aba Óculos informa que a atualização continua no Android.
+- 5.10: o catálogo da comunidade é de perfis do Tasker (só Android); no iOS a lista é só para consulta e publicar funciona.
+
 Pagamento, assinatura Pro e cobrança ficam fora deste plano por decisão do produto.
 
 | # | Tarefa | Android (origem) | iOS (destino) |

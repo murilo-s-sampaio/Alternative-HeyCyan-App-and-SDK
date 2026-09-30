@@ -630,4 +630,15 @@
     <string name="pro_live_economy_description">Lower-cost conversations. Usage costs 7 quota tokens per Gemini token. Google may use conversations to improve its models.</string>
     <string name="pro_live_private_description">Conversations are not used to train Google’s models under its paid API terms. Standard Pro Live usage pricing applies.</string>
     <string name="pro_live_mode_scope">Applies to new Live sessions from voice, images, or this screen.</string>
+    <string name="native_walking_aid_title">Walking Aid</string>
+    <string name="native_walking_aid_description">Takes a glasses photo every few seconds and speaks obstacle warnings. Uses the CyanBridge relay AI on iOS.</string>
+    <string name="native_meeting_spark_notes_title">Meeting Spark Notes</string>
+    <string name="native_meeting_spark_notes_description">Live meeting transcript from the glasses microphone, turned into notes when you stop.</string>
+    <string name="native_live_caption_relay_title">Live Caption Relay</string>
+    <string name="native_live_caption_relay_description">Live captions of what the glasses microphone hears, shown on the Glasses tab.</string>
+    <string name="native_hands_free_translator_title">Hands-Free Translator</string>
+    <string name="native_hands_free_translator_description">Listens through the glasses microphone and speaks the translation in your language.</string>
+    <string name="native_errand_brain_title">Errand Brain</string>
+    <string name="native_errand_brain_description">Turns what you say into tasks and timed reminders.</string>
+    <string name="native_ios_badge">iOS</string>
 </resources>

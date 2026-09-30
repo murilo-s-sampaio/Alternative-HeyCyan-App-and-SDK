@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>CyanBridge records voice questions and audio messages when you ask it to.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>CyanBridge plugins turn what the glasses microphone hears into captions, translations, notes and reminders.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>CyanBridge lets you attach photos to chats.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

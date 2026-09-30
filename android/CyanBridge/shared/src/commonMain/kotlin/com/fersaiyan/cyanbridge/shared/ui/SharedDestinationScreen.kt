@@ -36,6 +36,10 @@ import com.fersaiyan.cyanbridge.shared.settings.MemoryPrivacyMode
 import com.fersaiyan.cyanbridge.shared.settings.MemorySourceType
 import com.fersaiyan.cyanbridge.shared.platform.CyanBridgeServices
 import com.fersaiyan.cyanbridge.shared.platform.SharedMediaHooks
+import com.fersaiyan.cyanbridge.shared.ui.plugins.PublishPluginScreen
+import com.fersaiyan.cyanbridge.shared.plugins.PublishPluginUiState
+import com.fersaiyan.cyanbridge.shared.plugins.CommunityPluginCardData
+import com.fersaiyan.cyanbridge.shared.platform.SharedPluginsHooks
 import com.fersaiyan.cyanbridge.shared.platform.SharedSettingsHooks
 import androidx.compose.runtime.collectAsState
 import com.fersaiyan.cyanbridge.shared.recordings.TranscriptDialogUiState
@@ -229,39 +233,87 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
 @OptIn(ExperimentalResourceApi::class)
 @Composable
 private fun SharedPluginsDestination(onDestinationSelected: (AppDestination) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val pluginsPlatform = SharedPluginsHooks.platform
+    val enabledIds = pluginsPlatform?.enabledPluginIds?.collectAsState()?.value.orEmpty()
+    val available = pluginsPlatform?.availablePluginIds.orEmpty()
+    var communityPlugins by remember { mutableStateOf<List<CommunityPluginCardData>>(emptyList()) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    var selectedWindow by remember { mutableStateOf(PluginTimeWindow.ALL_TIME) }
+    var publishState by remember { mutableStateOf<PublishPluginUiState?>(null) }
+    val iosBadge = stringResource(Res.string.native_ios_badge)
+
+    fun refresh() {
+        val hooks = pluginsPlatform ?: return
+        if (isRefreshing) return
+        isRefreshing = true
+        scope.launch {
+            communityPlugins = runCatching { hooks.fetchCommunityPlugins() }.getOrDefault(communityPlugins)
+            isRefreshing = false
+        }
+    }
+
+    LaunchedEffect(Unit) { refresh() }
+
+    publishState?.let { state ->
+        SharedPublishPluginDestination(
+            state = state,
+            onStateChange = { publishState = it },
+            onClose = { publishState = null },
+        )
+        return
+    }
+
+    fun runnable(id: String, title: String, description: String) = NativePluginCardData(
+        id = id,
+        title = title,
+        description = description,
+        badge = iosBadge,
+        enabled = id in enabledIds,
+        hasSettings = false,
+        isAvailable = id in available,
+    )
+
     val nativePlugins = listOf(
+        runnable(
+            NativePluginIds.LIVE_CAPTION_RELAY,
+            stringResource(Res.string.native_live_caption_relay_title),
+            stringResource(Res.string.native_live_caption_relay_description),
+        ),
+        runnable(
+            NativePluginIds.HANDS_FREE_TRANSLATOR,
+            stringResource(Res.string.native_hands_free_translator_title),
+            stringResource(Res.string.native_hands_free_translator_description),
+        ),
+        runnable(
+            NativePluginIds.MEETING_SPARK_NOTES,
+            stringResource(Res.string.native_meeting_spark_notes_title),
+            stringResource(Res.string.native_meeting_spark_notes_description),
+        ),
+        runnable(
+            NativePluginIds.ERRAND_BRAIN,
+            stringResource(Res.string.native_errand_brain_title),
+            stringResource(Res.string.native_errand_brain_description),
+        ),
+        runnable(
+            NativePluginIds.WALKING_AID,
+            stringResource(Res.string.native_walking_aid_title),
+            stringResource(Res.string.native_walking_aid_description),
+        ),
         NativePluginCardData(
             id = NativePluginIds.LOCAL_AGENT,
-             title = stringResource(Res.string.native_local_agent_title),
-             description = stringResource(Res.string.native_local_agent_description),
-             badge = stringResource(Res.string.native_android_only),
+            title = stringResource(Res.string.native_local_agent_title),
+            description = stringResource(Res.string.native_local_agent_description),
+            badge = stringResource(Res.string.native_android_only),
             enabled = false,
             hasSettings = false,
             isAvailable = false,
         ),
         NativePluginCardData(
             id = NativePluginIds.AUTO_DIARY,
-             title = stringResource(Res.string.native_auto_diary_title),
-             description = stringResource(Res.string.native_auto_diary_description),
-             badge = stringResource(Res.string.native_ios_pending),
-            enabled = false,
-            hasSettings = false,
-            isAvailable = false,
-        ),
-        NativePluginCardData(
-            id = NativePluginIds.AUTO_AUDIO,
-            title = stringResource(Res.string.native_auto_audio_title),
-            description = stringResource(Res.string.native_auto_audio_description),
-            badge = stringResource(Res.string.native_ios_pending),
-            enabled = false,
-            hasSettings = false,
-            isAvailable = false,
-        ),
-        NativePluginCardData(
-            id = NativePluginIds.VISUAL_DIARY,
-            title = stringResource(Res.string.native_visual_diary_title),
-            description = stringResource(Res.string.native_visual_diary_description),
-            badge = stringResource(Res.string.native_ios_pending),
+            title = stringResource(Res.string.native_auto_diary_title),
+            description = stringResource(Res.string.native_auto_diary_description),
+            badge = stringResource(Res.string.native_android_only),
             enabled = false,
             hasSettings = false,
             isAvailable = false,
@@ -269,16 +321,63 @@ private fun SharedPluginsDestination(onDestinationSelected: (AppDestination) -> 
     )
 
     CommunityPluginsScreen(
-        plugins = emptyList(),
-        selectedWindow = PluginTimeWindow.ALL_TIME,
-        isRefreshing = false,
-        onWindowSelected = {},
-        onRefresh = {},
-        onPublishPlugin = {},
+        plugins = communityPlugins,
+        selectedWindow = selectedWindow,
+        isRefreshing = isRefreshing,
+        onWindowSelected = { selectedWindow = it },
+        onRefresh = ::refresh,
+        onOpenCommunityPlugin = { plugin ->
+            (plugin.taskerNetLink ?: plugin.downloadUrl)?.let { link -> pluginsPlatform?.openLink(link) }
+        },
+        onPublishPlugin = { publishState = PublishPluginUiState() },
         onDestinationSelected = onDestinationSelected,
         nativePlugins = nativePlugins,
-        onToggleNativePlugin = { _, _ -> },
+        onToggleNativePlugin = { id, enabled -> pluginsPlatform?.setPluginEnabled(id, enabled) },
         showNavigationBar = false,
+    )
+}
+
+@Composable
+private fun SharedPublishPluginDestination(
+    state: PublishPluginUiState,
+    onStateChange: (PublishPluginUiState) -> Unit,
+    onClose: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val categories = listOf("Productivity", "Accessibility", "Memory", "Media", "Other")
+    PublishPluginScreen(
+        state = state,
+        categories = categories,
+        onTitleChanged = { onStateChange(state.copy(title = it, titleError = null)) },
+        onAuthorChanged = { onStateChange(state.copy(author = it, authorError = null)) },
+        onDescriptionChanged = { onStateChange(state.copy(description = it, descriptionError = null)) },
+        onCategorySelected = { onStateChange(state.copy(category = it)) },
+        onTaskerNetLinkChanged = { onStateChange(state.copy(taskerNetLink = it, taskerNetLinkError = null)) },
+        onSubmit = {
+            val checked = state.copy(
+                titleError = "Required".takeIf { state.title.isBlank() },
+                authorError = "Required".takeIf { state.author.isBlank() },
+                descriptionError = "Required".takeIf { state.description.isBlank() },
+                taskerNetLinkError = "Use an https:// link".takeIf { !state.taskerNetLink.trim().startsWith("https://") },
+            )
+            if (listOf(checked.titleError, checked.authorError, checked.descriptionError, checked.taskerNetLinkError).any { it != null }) {
+                onStateChange(checked)
+                return@PublishPluginScreen
+            }
+            val hooks = SharedPluginsHooks.platform ?: return@PublishPluginScreen
+            onStateChange(checked.copy(isSubmitting = true))
+            scope.launch {
+                val sent = hooks.publishPlugin(
+                    title = state.title.trim(),
+                    author = state.author.trim(),
+                    description = state.description.trim(),
+                    category = state.category.ifBlank { categories.last() },
+                    link = state.taskerNetLink.trim(),
+                )
+                if (sent) onClose() else onStateChange(checked.copy(isSubmitting = false, taskerNetLinkError = "Server unavailable. Try again later."))
+            }
+        },
+        onNavigateBack = onClose,
     )
 }
 
