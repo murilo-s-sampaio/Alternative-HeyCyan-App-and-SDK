@@ -36,6 +36,11 @@ import com.fersaiyan.cyanbridge.shared.settings.MemoryPrivacyMode
 import com.fersaiyan.cyanbridge.shared.settings.MemorySourceType
 import com.fersaiyan.cyanbridge.shared.platform.CyanBridgeServices
 import com.fersaiyan.cyanbridge.shared.platform.SharedMediaHooks
+import com.fersaiyan.cyanbridge.shared.platform.SharedSettingsHooks
+import androidx.compose.runtime.collectAsState
+import com.fersaiyan.cyanbridge.shared.recordings.TranscriptDialogUiState
+import com.fersaiyan.cyanbridge.shared.recordings.TranscriptionProgressUiState
+import com.fersaiyan.cyanbridge.shared.platform.SharedRecordingsHooks
 import com.fersaiyan.cyanbridge.shared.platform.PlatformPreferences
 import com.fersaiyan.cyanbridge.shared.notes.NoteSummary
 import com.fersaiyan.cyanbridge.shared.platform.createPlatformPreferences
@@ -50,6 +55,7 @@ import com.fersaiyan.cyanbridge.shared.ui.recordings.SyncedMediaGalleryScreen
 import com.fersaiyan.cyanbridge.shared.ui.settings.SettingsScreenActions
 import com.fersaiyan.cyanbridge.shared.ui.settings.SettingsUiState
 import com.fersaiyan.cyanbridge.shared.ui.settings.SettingsScreen
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import com.fersaiyan.cyanbridge.shared.generated.resources.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -121,7 +127,20 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
         }
     }
 
+    val recordings = SharedRecordingsHooks.provider
+    var sessions by remember { mutableStateOf<List<RecordingItem>>(emptyList()) }
+    var transcribingId by remember { mutableStateOf<Long?>(null) }
+    var transcriptionProgress by remember { mutableStateOf<TranscriptionProgressUiState?>(null) }
+    var transcriptDialog by remember { mutableStateOf<TranscriptDialogUiState?>(null) }
+    val meetingState = recordings?.meetingState?.collectAsState()?.value ?: MeetingRecordingUiState()
+    val playingId = recordings?.playingId?.collectAsState()?.value
+
+    fun refreshRecordings() {
+        scope.launch { sessions = recordings?.recordings().orEmpty() }
+    }
+
     LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(meetingState.isRecording) { refreshRecordings() }
 
     if (showGallery) {
         SyncedMediaGalleryScreen(
@@ -147,25 +166,60 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
         )
     } else {
         RecordingsScreen(
-            sessions = emptyList<RecordingItem>(),
+            sessions = sessions,
             isLoading = false,
             recentSyncedMedia = mediaItems.take(4),
-            playingSessionId = null,
-            transcribingSessionId = null,
-            meetingRecording = MeetingRecordingUiState(),
-            transcriptionProgress = null,
-            transcriptDialog = null,
+            playingSessionId = playingId,
+            transcribingSessionId = transcribingId,
+            meetingRecording = meetingState,
+            transcriptionProgress = transcriptionProgress,
+            transcriptDialog = transcriptDialog,
              formatTimestamp = formatTimestamp,
             loadThumbnail = { path: String -> SharedMediaHooks.loadThumbnail?.invoke(path) },
             onOpenSyncedMedia = { showGallery = true },
             onOpenSyncedMediaItem = { item ->
                 SharedMediaHooks.openMedia?.invoke(item.contentUriString) ?: run { showGallery = true }
             },
-            onPlay = {},
-            onTranscribe = {},
-            onViewTranscript = {},
-            onStopMeetingCapture = {},
-            onDismissTranscript = {},
+            onPlay = { item -> recordings?.togglePlayback(item.id) },
+            onTranscribe = { item ->
+                val provider = recordings ?: return@RecordingsScreen
+                if (transcribingId != null) return@RecordingsScreen
+                transcribingId = item.id
+                scope.launch {
+                    runCatching {
+                        provider.transcribe(item.id) { message ->
+                            transcriptionProgress = TranscriptionProgressUiState(title = item.title, message = message)
+                        }
+                    }.onSuccess { text ->
+                        transcriptDialog = TranscriptDialogUiState(title = item.title, text = text)
+                    }.onFailure { error ->
+                        transcriptDialog = TranscriptDialogUiState(
+                            title = item.title,
+                            text = error.message ?: "Transcription failed",
+                        )
+                    }
+                    transcriptionProgress = null
+                    transcribingId = null
+                    refreshRecordings()
+                }
+            },
+            onViewTranscript = { item ->
+                scope.launch {
+                    recordings?.transcript(item.id)?.let { text ->
+                        transcriptDialog = TranscriptDialogUiState(title = item.title, text = text)
+                    }
+                }
+            },
+            onStopMeetingCapture = {
+                recordings?.stopMeetingCapture()
+                refreshRecordings()
+            },
+            onDeleteItems = { items ->
+                val deleted = recordings?.delete(items.map { it.id }).orEmpty()
+                refreshRecordings()
+                deleted
+            },
+            onDismissTranscript = { transcriptDialog = null },
             onDestinationSelected = onDestinationSelected,
             showNavigationBar = false,
         )
@@ -312,13 +366,16 @@ private class SharedSettingsScreenActions(
     private val currentState: () -> SettingsUiState,
     private val updateState: (SettingsUiState) -> Unit,
 ) : SettingsScreenActions {
+    private val platform get() = SharedSettingsHooks.platform
+    private val scope = MainScope()
+
     private fun update(transform: (SettingsUiState) -> SettingsUiState) {
         updateState(transform(currentState()))
     }
 
     override fun onDestinationSelected(destination: AppDestination) = onDestinationSelected.invoke(destination)
     override fun openAppearance() = onOpenAppearance.invoke()
-    override fun openAppLanguageSelection() = Unit
+    override fun openAppLanguageSelection() { platform?.openAppLanguageSettings() }
     override fun openSubscription() = onOpenSubscription.invoke()
     override fun setDefaultImageQuestion(question: String) = update { it.copy(defaultImageQuestion = question) }
     override fun resetDefaultImageQuestion() = update {
@@ -334,22 +391,31 @@ private class SharedSettingsScreenActions(
             else -> state
         }
     }
-    override fun deletePassiveCapture() = Unit
+    override fun deletePassiveCapture() { platform?.stopMeetingCapture() }
     override fun lockVault() = update { it.copy(vaultLocked = true) }
-    override fun unlockVault() = update { it.copy(vaultLocked = false) }
-    override fun setVaultPassphrase() = Unit
-    override fun clearVaultPassphrase() = Unit
+    override fun unlockVault() {
+        val hooks = platform ?: return update { it.copy(vaultLocked = false) }
+        scope.launch { if (hooks.unlockVault()) update { it.copy(vaultLocked = false) } }
+    }
+    override fun setVaultPassphrase() {
+        val hooks = platform ?: return
+        scope.launch { if (hooks.setVaultPassphrase()) update { it.copy(vaultRequiresPassphrase = true) } }
+    }
+    override fun clearVaultPassphrase() {
+        val hooks = platform ?: return
+        scope.launch { if (hooks.clearVaultPassphrase()) update { it.copy(vaultRequiresPassphrase = false) } }
+    }
     override fun resetVault() = update { it.copy(vaultLocked = false, vaultRequiresPassphrase = false) }
     override fun setTranscriptStorageEnabled(enabled: Boolean) = update { it.copy(transcriptStorageEnabled = enabled) }
     override fun setRedactNamesEnabled(enabled: Boolean) = update { it.copy(redactNamesEnabled = enabled) }
     override fun setIncludeFullTranscriptionEnabled(enabled: Boolean) = update { it.copy(includeFullTranscriptionInExports = enabled) }
-    override fun exportLocalData() = Unit
-    override fun importLocalData() = Unit
-    override fun importChatGptData() = Unit
-    override fun importClaudeData() = Unit
-    override fun clearLocalData() = Unit
-    override fun sendDebugLogs() = Unit
-    override fun stopMeetingCapture() = Unit
+    override fun exportLocalData() { platform?.exportLocalData() }
+    override fun importLocalData() { platform?.importLocalData() }
+    override fun importChatGptData() { platform?.importChatGptData() }
+    override fun importClaudeData() { platform?.importClaudeData() }
+    override fun clearLocalData() { platform?.clearLocalData() }
+    override fun sendDebugLogs() { platform?.sendDebugLogs() }
+    override fun stopMeetingCapture() { platform?.stopMeetingCapture() }
     override fun setProviderType(type: AgentProviderType) = update { it.copy(providerType = type) }
     override fun openTaskerIntegrations() = Unit
     override fun openLocalModels() = Unit
@@ -365,6 +431,7 @@ private fun loadSharedSettings(preferences: PlatformPreferences): SettingsUiStat
     syncOcr = preferences.getBoolean("sync_ocr", false),
     syncDerived = preferences.getBoolean("sync_derived", false),
     vaultLocked = preferences.getBoolean("vault_locked", false),
+    vaultRequiresPassphrase = SharedSettingsHooks.platform?.vaultHasPassphrase() ?: false,
     transcriptStorageEnabled = preferences.getBoolean("transcript_storage", true),
     redactNamesEnabled = preferences.getBoolean("redact_names", true),
     includeFullTranscriptionInExports = preferences.getBoolean("full_transcript_exports", false),

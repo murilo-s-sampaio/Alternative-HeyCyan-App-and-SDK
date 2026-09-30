@@ -69,6 +69,8 @@ import com.fersaiyan.cyanbridge.shared.ui.sharedDefaultImageQuestion
 import com.fersaiyan.cyanbridge.shared.persistence.ChatEntity
 import com.fersaiyan.cyanbridge.shared.persistence.ChatMessageEntity
 import com.fersaiyan.cyanbridge.shared.ui.DeviceBindScreen
+import com.fersaiyan.cyanbridge.shared.ui.onboarding.OnboardingLanguageOption
+import com.fersaiyan.cyanbridge.shared.ui.onboarding.WelcomeScreen
 import com.fersaiyan.cyanbridge.shared.ui.theme.CyanBridgeMaterialTheme
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.refTo
@@ -96,7 +98,12 @@ import platform.NetworkExtension.NEHotspotConfigurationManager
 import platform.NetworkExtension.NEHotspotNetwork
 import platform.CoreBluetooth.CBAdvertisementDataServiceUUIDsKey
 import platform.CoreBluetooth.CBUUID
+import platform.Foundation.NSLocale
 import platform.Foundation.NSString
+import platform.Foundation.currentLocale
+import platform.Foundation.languageCode
+import platform.Foundation.localizedStringForLanguageCode
+import platform.Foundation.preferredLanguages
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.dataUsingEncoding
 import platform.Foundation.NSData
@@ -116,6 +123,8 @@ private const val VOICE_QUESTION_WINDOW_MS = 6_000L
 // Same option lists as Android's MainActivity for HeyCyan recording limits.
 private val VIDEO_DURATION_OPTIONS_SECONDS = listOf(15, 30, 60, 180, 540, 720)
 private val AUDIO_DURATION_OPTIONS_SECONDS = listOf(1_800, 3_600, 7_200)
+// Android MainActivity meetingTimerOptions: none, 15 min, 1 h, 3 h.
+private val MEETING_TIMER_SECONDS = listOf<Long?>(null, 15L * 60L, 60L * 60L, 3L * 60L * 60L)
 // Android ImageThumbnailQuality (sdkValue to label).
 private val THUMBNAIL_QUALITY_LABELS = mapOf(
     0 to "Instant", 1 to "Quick", 2 to "Smooth", 3 to "Fine", 4 to "Clearer", 5 to "Detailed",
@@ -178,8 +187,30 @@ private fun IosCyanBridgeApp(
     var appearanceSettings by remember { mutableStateOf(appearanceStore.load()) }
 
     val deviceBindState by controller.deviceBindState.collectAsState()
+    val onboardingPreferences = remember { createPlatformPreferences("cyanbridge_onboarding") }
+    var welcomeDone by remember { mutableStateOf(onboardingPreferences.getBoolean("welcome_done", false)) }
 
     CyanBridgeMaterialTheme(settings = appearanceSettings) {
+        if (!welcomeDone) {
+            // iOS applies the app language from the system (Settings ▸ CyanBridge ▸ Language).
+            // The UI follows the preferred-language list, not the region locale.
+            val preferred = (NSLocale.preferredLanguages.firstOrNull() as? String) ?: NSLocale.currentLocale.languageCode
+            val languageName = NSLocale(localeIdentifier = preferred).localizedStringForLanguageCode(preferred)
+                ?.replaceFirstChar { it.uppercase() }
+                ?: "System language"
+            val systemLanguage = OnboardingLanguageOption(id = "system", label = languageName)
+            WelcomeScreen(
+                languageOptions = listOf(systemLanguage),
+                selectedLanguageId = systemLanguage.id,
+                languageSelectionComplete = true,
+                onLanguageSelected = {},
+                onStartSetup = {
+                    onboardingPreferences.putBoolean("welcome_done", true)
+                    welcomeDone = true
+                },
+            )
+            return@CyanBridgeMaterialTheme
+        }
         Box(modifier = Modifier.fillMaxSize()) {
             CyanBridgeApp(
                 initialDestination = initialDestination,
@@ -447,6 +478,7 @@ private class IosAppController {
     private val chatAiService = IosRelayChatAiService()
     private val voiceAiService = IosRelayVoiceAiService()
     private val imageAiService = IosRelayImageAiService()
+    private val meetingRecorder = IosMeetingRecorder(voiceAiService, chatAiService, notesRepository)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _dashboardState = MutableStateFlow(
@@ -486,6 +518,27 @@ private class IosAppController {
         })
         IosMediaPlatform.installSharedMediaHooks()
         IosChatPlatform.installSharedChatHooks()
+        SharedRecordingsHooks.provider = meetingRecorder
+        SharedSettingsHooks.platform = IosSettingsPlatform(
+            chatRepository = chatRepository,
+            notesRepository = notesRepository,
+            mediaRecordRepository = mediaRecordRepository,
+            meetingRecorder = meetingRecorder,
+            relayBaseUrl = DEFAULT_RELAY_URL,
+        )
+        scope.launch {
+            meetingRecorder.meetingState.collect { meeting ->
+                updateState {
+                    it.copy(
+                        meeting = it.meeting.copy(
+                            isRecording = meeting.isRecording,
+                            sourceLabel = meeting.sourceLabel ?: "(not recording)",
+                            bannerLabel = if (meeting.isRecording) "Recording meeting · ${meeting.sourceLabel}" else "",
+                        ),
+                    )
+                }
+            }
+        }
         bleManager.vendorBridge = vendorBridge
         val thumbnailQuality = glassesPreferences.getInt(PREF_THUMBNAIL_QUALITY, 4)
         updateState {
@@ -623,6 +676,14 @@ private class IosAppController {
             }
             GlassesDashboardAction.SyncTime -> syncTime()
             GlassesDashboardAction.RequestVolume -> requestVolume()
+            is GlassesDashboardAction.SelectMeetingTimer -> updateState {
+                it.copy(meeting = it.meeting.copy(timerIndex = action.index.coerceIn(0, MEETING_TIMER_SECONDS.lastIndex)))
+            }
+            GlassesDashboardAction.StartMeetingCapture -> scope.launch {
+                val timer = MEETING_TIMER_SECONDS[_dashboardState.value.meeting.timerIndex]
+                meetingRecorder.start(timer)?.let { error -> updateState { it.copy(agentLastError = error) } }
+            }
+            GlassesDashboardAction.StopMeetingCapture -> meetingRecorder.stopMeetingCapture()
             GlassesDashboardAction.TestImageQuestion -> vendorMode(VendorGlassesMode.AI_PHOTO, "Image question") {
                 updateState { it.copy(agentLastError = "Waiting for the glasses photo…") }
             }

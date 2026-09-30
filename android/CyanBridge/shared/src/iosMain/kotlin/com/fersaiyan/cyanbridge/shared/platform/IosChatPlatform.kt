@@ -86,34 +86,48 @@ object IosChatPlatform {
 
     /** Records AAC audio, preferring the glasses' Bluetooth (HFP) microphone when connected. */
     suspend fun startRecording(): Boolean {
-        val session = AVAudioSession.sharedInstance()
-        val granted = suspendCancellableCoroutine { continuation ->
-            session.requestRecordPermission { allowed -> if (continuation.isActive) continuation.resume(allowed) }
+        if (!requestMicrophonePermission()) return false
+        configureRecordingSession()
+        val url = NSURL.fileURLWithPath(NSTemporaryDirectory() + "cyanbridge-voice.m4a")
+        val audioRecorder = AVAudioRecorder(uRL = url, settings = aacRecordingSettings(), error = null)
+        if (!audioRecorder.record()) return false
+        recorder = audioRecorder
+        recordingUrl = url
+        return true
+    }
+
+    internal suspend fun requestMicrophonePermission(): Boolean = suspendCancellableCoroutine { continuation ->
+        AVAudioSession.sharedInstance().requestRecordPermission { allowed ->
+            if (continuation.isActive) continuation.resume(allowed)
         }
-        if (!granted) return false
+    }
+
+    /** Play-and-record session that prefers the glasses' HFP mic; returns a source label. */
+    internal fun configureRecordingSession(): String {
+        val session = AVAudioSession.sharedInstance()
         session.setCategory(
             AVAudioSessionCategoryPlayAndRecord,
             withOptions = AVAudioSessionCategoryOptionAllowBluetooth or AVAudioSessionCategoryOptionDefaultToSpeaker,
             error = null,
         )
         session.setActive(true, error = null)
-        session.availableInputs
+        val bluetoothInput = session.availableInputs
             ?.filterIsInstance<AVAudioSessionPortDescription>()
             ?.firstOrNull { it.portType == AVAudioSessionPortBluetoothHFP }
-            ?.let { session.setPreferredInput(it, error = null) }
-
-        val url = NSURL.fileURLWithPath(NSTemporaryDirectory() + "cyanbridge-voice.m4a")
-        val settings = mapOf<Any?, Any?>(
-            AVFormatIDKey to kAudioFormatMPEG4AAC.toInt(),
-            AVSampleRateKey to 16_000.0,
-            AVNumberOfChannelsKey to 1,
-        )
-        val audioRecorder = AVAudioRecorder(uRL = url, settings = settings, error = null)
-        if (!audioRecorder.record()) return false
-        recorder = audioRecorder
-        recordingUrl = url
-        return true
+        return if (bluetoothInput != null) {
+            session.setPreferredInput(bluetoothInput, error = null)
+            "Glasses microphone (Bluetooth)"
+        } else {
+            "iPhone microphone"
+        }
     }
+
+    /** 16 kHz mono AAC keeps speech small enough for relay transcription. */
+    internal fun aacRecordingSettings(): Map<Any?, Any?> = mapOf(
+        AVFormatIDKey to kAudioFormatMPEG4AAC.toInt(),
+        AVSampleRateKey to 16_000.0,
+        AVNumberOfChannelsKey to 1,
+    )
 
     suspend fun stopRecording(): ByteArray? {
         val audioRecorder = recorder ?: return null

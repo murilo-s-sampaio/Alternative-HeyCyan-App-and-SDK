@@ -28,6 +28,7 @@
 		AA9999A22E40000000B03938 /* GlassesMediaDownloader.m in Sources */ = {isa = PBXBuildFile; fileRef = AA9999A12E40000000B03938 /* GlassesMediaDownloader.m */; };
 		BB9E74E1FE /* MediaGalleryViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = BB48D45A88 /* MediaGalleryViewController.m */; };
 		CB2000012F00000100CB0001 /* CyanBridgeKMPHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2000022F00000100CB0001 /* CyanBridgeKMPHostApp.swift */; };
+		CB2000132F00000100CB0001 /* IosSecurityBridgeImpl.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2000142F00000100CB0001 /* IosSecurityBridgeImpl.swift */; };
 		CB2000112F00000100CB0001 /* QCSDKGlassesBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2000122F00000100CB0001 /* QCSDKGlassesBridge.swift */; };
 		CT3000012F00000100CT0001 /* CyanBridgeKMPHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CT3000022F00000100CT0001 /* CyanBridgeKMPHostTests.swift */; };
 /* End PBXBuildFile section */
@@ -74,6 +75,7 @@
 		BB48D45A88 /* MediaGalleryViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaGalleryViewController.m; sourceTree = "<group>"; };
 		BBEA4D0FAD /* MediaGalleryViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaGalleryViewController.h; sourceTree = "<group>"; };
 		CB2000022F00000100CB0001 /* CyanBridgeKMPHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CyanBridgeKMPHostApp.swift; sourceTree = "<group>"; };
+		CB2000142F00000100CB0001 /* IosSecurityBridgeImpl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IosSecurityBridgeImpl.swift; sourceTree = "<group>"; };
 		CB2000122F00000100CB0001 /* QCSDKGlassesBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QCSDKGlassesBridge.swift; sourceTree = "<group>"; };
 		CB2000032F00000100CB0001 /* CyanBridgeKMPHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CyanBridgeKMPHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CB20000D2F00000100CB0001 /* CyanBridgeKMPHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CyanBridgeKMPHost.entitlements; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 			children = (
 				CB2000022F00000100CB0001 /* CyanBridgeKMPHostApp.swift */,
 				CB2000122F00000100CB0001 /* QCSDKGlassesBridge.swift */,
+				CB2000142F00000100CB0001 /* IosSecurityBridgeImpl.swift */,
 				CB20000D2F00000100CB0001 /* CyanBridgeKMPHost.entitlements */,
 			);
 			path = CyanBridgeKMPHost;
@@ -428,6 +431,7 @@
 			files = (
 				CB2000012F00000100CB0001 /* CyanBridgeKMPHostApp.swift in Sources */,
 				CB2000112F00000100CB0001 /* QCSDKGlassesBridge.swift in Sources */,
+				CB2000132F00000100CB0001 /* IosSecurityBridgeImpl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

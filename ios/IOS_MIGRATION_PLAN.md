@@ -99,6 +99,16 @@ Notas:
 
 ## Sprint 4 — Reuniões, gravações e Configurações
 
+Status: implementada; compila para iPhone e simulador e abre sem crash. Boas-vindas conferida no simulador; reuniões, transcrição, importação e cofre precisam de teste no iPhone.
+
+Notas:
+- 4.1: a gravação usa o microfone Bluetooth dos óculos quando disponível e continua com a tela bloqueada (modo de fundo `audio`).
+- 4.4/4.5: a transcrição envia o áudio inteiro ao relay; reuniões muito longas podem passar do limite do servidor. O resumo é feito pela IA do relay e salvo como nota de reunião.
+- 4.6: o backup do iOS (chats e notas em JSON) é um formato próprio; ainda não é compatível com o backup do Android.
+- 4.8: a "criptografia" do cofre no iOS era um XOR simples. Foi trocada por AES-256-GCM (CryptoKit) e PBKDF2-HMAC-SHA256 (CommonCrypto); a senha do cofre fica no Keychain como verificador PBKDF2. Nenhum dado usava a versão antiga.
+- 4.9: os logs enviados são as últimas 500 linhas do log do app.
+- 4.10: o idioma no iOS segue o sistema (Ajustes ▸ CyanBridge ▸ Idioma); as telas de onboarding com permissões do Android não se aplicam, porque o iOS pede cada permissão na hora do uso.
+
 | # | Tarefa | Android (origem) | iOS (destino) |
 |---|---|---|---|
 | 4.1 | Captura de reunião em segundo plano | `MeetingCaptureService` | `AVAudioRecorder` + modo de fundo `audio` |

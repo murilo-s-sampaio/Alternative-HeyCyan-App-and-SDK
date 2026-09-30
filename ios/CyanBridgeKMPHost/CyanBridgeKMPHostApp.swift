@@ -5,6 +5,7 @@ import CyanBridgeShared
 struct CyanBridgeKMPHostApp: App {
     init() {
         VendorGlassesSetup.register()
+        IosSecurityBridgeImpl.register()
     }
 
     var body: some Scene {
