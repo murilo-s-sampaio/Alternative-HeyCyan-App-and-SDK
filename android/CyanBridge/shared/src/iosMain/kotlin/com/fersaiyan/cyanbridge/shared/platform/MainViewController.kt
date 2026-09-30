@@ -28,11 +28,22 @@ import com.fersaiyan.cyanbridge.shared.ble.BleNotificationListener
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesEventListener
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesMode
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesRegistry
+import com.fersaiyan.cyanbridge.shared.ble.awaitAudioSettings
 import com.fersaiyan.cyanbridge.shared.ble.awaitBattery
+import com.fersaiyan.cyanbridge.shared.ble.awaitDeleteMedia
+import com.fersaiyan.cyanbridge.shared.ble.awaitOpenWifi
+import com.fersaiyan.cyanbridge.shared.ble.awaitSetAudioSettings
+import com.fersaiyan.cyanbridge.shared.ble.awaitSetVideoSettings
+import com.fersaiyan.cyanbridge.shared.ble.awaitSetWearingDetection
+import com.fersaiyan.cyanbridge.shared.ble.awaitVideoSettings
+import com.fersaiyan.cyanbridge.shared.ble.awaitVolume
+import com.fersaiyan.cyanbridge.shared.ble.awaitWearingDetection
+import com.fersaiyan.cyanbridge.shared.ble.awaitWifiIp
 import com.fersaiyan.cyanbridge.shared.ble.awaitMediaCounts
 import com.fersaiyan.cyanbridge.shared.ble.awaitModeAccepted
 import com.fersaiyan.cyanbridge.shared.ble.awaitSyncTime
 import com.fersaiyan.cyanbridge.shared.ble.awaitVersion
+import com.fersaiyan.cyanbridge.shared.glasses.AiWakeWordRoute
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardAction
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardUiState
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesTransferUiState
@@ -89,6 +100,17 @@ private const val DEFAULT_RELAY_URL = "https://cyanbridge.vercel.app"
 private const val IOS_TRANSFER_IP_TIMEOUT_MS = 15_000L
 private const val IOS_HOST_CREDENTIAL_TIMEOUT_MS = 10_000L
 private const val IOS_BLE_CONNECT_TIMEOUT_MS = 20_000L
+private const val IOS_MANUAL_JOIN_TIMEOUT_MS = 120_000L
+private const val IOS_GLASSES_PREFERENCES = "cyanbridge_ios_glasses"
+private const val PREF_AI_WAKE_ROUTE = "ai_wake_word_route"
+private const val PREF_THUMBNAIL_QUALITY = "image_thumbnail_quality"
+// Same option lists as Android's MainActivity for HeyCyan recording limits.
+private val VIDEO_DURATION_OPTIONS_SECONDS = listOf(15, 30, 60, 180, 540, 720)
+private val AUDIO_DURATION_OPTIONS_SECONDS = listOf(1_800, 3_600, 7_200)
+// Android ImageThumbnailQuality (sdkValue to label).
+private val THUMBNAIL_QUALITY_LABELS = mapOf(
+    0 to "Instant", 1 to "Quick", 2 to "Smooth", 3 to "Fine", 4 to "Clearer", 5 to "Detailed",
+)
 private val IOS_TRANSFER_MODE_COMMAND = byteArrayOf(0x02, 0x01, 0x04)
 private val IOS_PRO_SUBSCRIPTION_STATE = ProSubscriptionUiState(
     status = "iOS checkout is unavailable until account sign-in and verified billing are implemented. Pro is not active.",
@@ -311,6 +333,31 @@ private class IosWifiP2pManager : WifiP2pManager {
 
     suspend fun hasCurrentWifiConnection(): Boolean = currentNetworkSsid() != null
 
+    /**
+     * Asks iOS to join the glasses hotspot. Returns null when iOS accepted the
+     * request, or the error text when it did not (for example, builds signed
+     * without the Hotspot entitlement). Callers verify the link over HTTP, which
+     * works without the Wi-Fi information entitlement.
+     */
+    suspend fun requestHotspotJoin(ssidValue: String, passphrase: String): String? {
+        val ssid = ssidValue.trim()
+        if (ssid.isEmpty()) return "Missing hotspot SSID"
+        _connectionState.value = P2pConnectionState.CONNECTING
+        val configuration = if (passphrase.isBlank()) {
+            NEHotspotConfiguration(sSID = ssid)
+        } else {
+            NEHotspotConfiguration(sSID = ssid, passphrase = passphrase, isWEP = false)
+        }
+        configuration.joinOnce = true
+        return applyConfiguration(configuration).also { error ->
+            connectedSsid = if (error == null) ssid else null
+        }
+    }
+
+    fun markConnected() {
+        _connectionState.value = P2pConnectionState.CONNECTED
+    }
+
     private suspend fun applyConfiguration(configuration: NEHotspotConfiguration): String? =
         suspendCancellableCoroutine { continuation ->
             NEHotspotConfigurationManager.sharedManager.applyConfiguration(configuration) { error ->
@@ -406,6 +453,9 @@ private class IosAppController {
     private var lastDiscoveredIdentifier: String? = null
     private var selectedDeviceClass: DeviceClass = DeviceClass.UNKNOWN
     private val vendorBridge = VendorGlassesRegistry.bridge
+    private val glassesPreferences = createPlatformPreferences(IOS_GLASSES_PREFERENCES)
+    private var videoAngle = 0
+    private var audioAngle = 0
     private val vendor get() = vendorBridge?.takeIf { bleManager.isVendorAttached.value }
     private var isBleConnected = false
 
@@ -422,7 +472,16 @@ private class IosAppController {
                 }
             }
         })
+        IosMediaPlatform.installSharedMediaHooks()
         bleManager.vendorBridge = vendorBridge
+        val thumbnailQuality = glassesPreferences.getInt(PREF_THUMBNAIL_QUALITY, 4)
+        updateState {
+            it.copy(
+                aiWakeWordRoute = AiWakeWordRoute.fromRaw(glassesPreferences.getString(PREF_AI_WAKE_ROUTE, "")),
+                imageThumbnailQualitySdkValue = thumbnailQuality,
+                imageThumbnailQualityLabel = THUMBNAIL_QUALITY_LABELS[thumbnailQuality] ?: "Clearer",
+            )
+        }
         vendorBridge?.setEventListener(object : VendorGlassesEventListener {
             override fun onBatteryChanged(level: Int, charging: Boolean) {
                 scope.launch { updateState { it.copy(batteryPercent = level, showBattery = true) } }
@@ -524,7 +583,7 @@ private class IosAppController {
             GlassesDashboardAction.Disconnect -> scope.launch { bleManager.disconnect() }
             GlassesDashboardAction.RequestBattery -> requestBattery()
             GlassesDashboardAction.RequestVersion -> requestVersion()
-            GlassesDashboardAction.StartSync -> startSync()
+            GlassesDashboardAction.StartSync -> if (vendor != null) startVendorSync() else startSync()
             GlassesDashboardAction.StopSync -> stopSync()
             GlassesDashboardAction.CapturePhoto -> if (vendor != null) {
                 vendorMode(VendorGlassesMode.PHOTO, "Photo")
@@ -543,6 +602,25 @@ private class IosAppController {
                 sendGlassesCommand("media count", byteArrayOf(0x02, 0x04))
             }
             GlassesDashboardAction.SyncTime -> syncTime()
+            GlassesDashboardAction.RequestVolume -> requestVolume()
+            is GlassesDashboardAction.SetWearingDetection -> setWearingDetection(action.enabled)
+            GlassesDashboardAction.RefreshRecordingSettings -> refreshRecordingSettings(showErrors = true)
+            is GlassesDashboardAction.SetVideoRecordingDuration -> setRecordingDuration(isAudio = false, seconds = action.seconds)
+            is GlassesDashboardAction.SetAudioRecordingDuration -> setRecordingDuration(isAudio = true, seconds = action.seconds)
+            is GlassesDashboardAction.SetAiWakeWordRoute -> {
+                glassesPreferences.putString(PREF_AI_WAKE_ROUTE, action.route.name)
+                updateState { it.copy(aiWakeWordRoute = action.route) }
+            }
+            is GlassesDashboardAction.SelectImageThumbnailQuality -> {
+                val value = action.sdkValue.takeIf { it in THUMBNAIL_QUALITY_LABELS } ?: 4
+                glassesPreferences.putInt(PREF_THUMBNAIL_QUALITY, value)
+                updateState {
+                    it.copy(
+                        imageThumbnailQualitySdkValue = value,
+                        imageThumbnailQualityLabel = THUMBNAIL_QUALITY_LABELS.getValue(value),
+                    )
+                }
+            }
             GlassesDashboardAction.ToggleAdvanced -> updateState { it.copy(advancedExpanded = !it.advancedExpanded) }
             is GlassesDashboardAction.Navigate -> Unit
             else -> updateState { it.copy(agentLastError = "This control is not implemented in the iOS host yet") }
@@ -710,6 +788,193 @@ private class IosAppController {
         bridge.awaitBattery()?.let { (level, _) -> updateState { it.copy(batteryPercent = level, showBattery = true) } }
         bridge.awaitVersion()?.let { info -> updateState { it.copy(deviceInfoLabel = formatVendorVersion(info)) } }
         bridge.awaitMediaCounts()?.let { counts -> showMediaCounts(counts.photos, counts.videos, counts.audio) }
+        bridge.awaitWearingDetection()?.let { enabled -> updateState { it.copy(wearingDetectionEnabled = enabled) } }
+        refreshRecordingSettings(showErrors = false)
+    }
+
+    private fun requestVolume() {
+        val bridge = vendor ?: return reportVendorRequired("Volume")
+        scope.launch {
+            val volume = bridge.awaitVolume()
+            updateState {
+                it.copy(
+                    agentLastError = volume?.let { v ->
+                        "Volume: music ${v.musicCurrent}/${v.musicMax} · call ${v.callCurrent}/${v.callMax} · " +
+                            "system ${v.systemCurrent}/${v.systemMax}"
+                    } ?: "Volume unavailable",
+                )
+            }
+        }
+    }
+
+    private fun setWearingDetection(enabled: Boolean) {
+        val bridge = vendor ?: return reportVendorRequired("Wearing detection")
+        scope.launch {
+            if (bridge.awaitSetWearingDetection(enabled)) {
+                updateState { it.copy(wearingDetectionEnabled = enabled) }
+            } else {
+                updateState { it.copy(agentLastError = "Wearing detection change failed") }
+            }
+        }
+    }
+
+    private suspend fun loadRecordingSettings(showErrors: Boolean) {
+        val bridge = vendor ?: return
+        val video = bridge.awaitVideoSettings()
+        val audio = bridge.awaitAudioSettings()
+        video?.let { videoAngle = it.angle }
+        audio?.let { audioAngle = it.angle }
+        updateState {
+            it.copy(
+                videoRecordingDurationSeconds = video?.durationSeconds ?: it.videoRecordingDurationSeconds,
+                videoRecordingDurationOptionsSeconds = VIDEO_DURATION_OPTIONS_SECONDS,
+                audioRecordingDurationSeconds = audio?.durationSeconds ?: it.audioRecordingDurationSeconds,
+                audioRecordingDurationOptionsSeconds = AUDIO_DURATION_OPTIONS_SECONDS,
+                agentLastError = if (showErrors && (video == null || audio == null)) {
+                    "Recording limits unavailable"
+                } else {
+                    it.agentLastError
+                },
+            )
+        }
+    }
+
+    private fun refreshRecordingSettings(showErrors: Boolean) {
+        if (vendor == null) {
+            if (showErrors) reportVendorRequired("Recording limits")
+            return
+        }
+        scope.launch { loadRecordingSettings(showErrors) }
+    }
+
+    private fun setRecordingDuration(isAudio: Boolean, seconds: Int) {
+        val allowed = if (isAudio) AUDIO_DURATION_OPTIONS_SECONDS else VIDEO_DURATION_OPTIONS_SECONDS
+        if (seconds !in allowed) return
+        val bridge = vendor ?: return reportVendorRequired("Recording limits")
+        scope.launch {
+            val saved = if (isAudio) {
+                bridge.awaitSetAudioSettings(audioAngle, seconds)
+            } else {
+                bridge.awaitSetVideoSettings(videoAngle, seconds)
+            }
+            if (saved) {
+                updateState {
+                    if (isAudio) it.copy(audioRecordingDurationSeconds = seconds) else it.copy(videoRecordingDurationSeconds = seconds)
+                }
+            } else {
+                updateState { it.copy(agentLastError = "Recording limit change failed") }
+            }
+        }
+    }
+
+    private fun reportVendorRequired(label: String) {
+        updateState { it.copy(agentLastError = "$label needs HeyCyan glasses connected through the vendor SDK") }
+    }
+
+    // ── Media sync through QCSDK (Android: startDataDownload) ──
+
+    private fun startVendorSync() {
+        val bridge = vendor ?: return
+        syncJob?.cancel()
+        syncJob = scope.launch {
+            fun detail(text: String, progress: Float? = null) = updateState {
+                it.copy(transfer = it.transfer.copy(isVisible = true, detail = text, progress = progress))
+            }
+            updateState { it.copy(agentLastError = "", transfer = GlassesTransferUiState(isVisible = true)) }
+
+            detail("Enabling glasses transfer mode")
+            val credentials = bridge.awaitOpenWifi(VendorGlassesMode.TRANSFER)
+            if (credentials == null) {
+                detail("The glasses did not enter transfer mode. Make sure they are not recording, then retry.")
+                return@launch
+            }
+
+            detail("Waiting for the glasses hotspot ${credentials.ssid}")
+            var ip: String? = null
+            for (attempt in 1..10) {
+                ip = bridge.awaitWifiIp()
+                if (ip != null) break
+                delay(2_000L)
+            }
+            if (ip == null) {
+                detail("The glasses hotspot did not report an IP address. Retry sync.")
+                return@launch
+            }
+            wifiP2pManager.setGlassesIpAddress(ip)
+            IosTransferModeConfiguration.configurePreparedHotspot(credentials.ssid, credentials.passphrase, ip)
+
+            if (!mediaTransfer.isReachable(ip)) {
+                val joinError = wifiP2pManager.requestHotspotJoin(credentials.ssid, credentials.passphrase)
+                if (joinError == null) {
+                    detail("Joining ${credentials.ssid}")
+                } else {
+                    // Free-account builds cannot join automatically; the user joins in Settings.
+                    detail(
+                        "Open Settings ▸ Wi-Fi and join:\n${credentials.ssid}\n" +
+                            "Password: ${credentials.passphrase.ifBlank { "(none)" }}\n\nThen return to CyanBridge.",
+                    )
+                }
+                val reachable = withTimeoutOrNull(IOS_MANUAL_JOIN_TIMEOUT_MS) {
+                    while (!mediaTransfer.isReachable(ip)) delay(3_000L)
+                    true
+                } ?: false
+                if (!reachable) {
+                    detail("Could not reach the glasses at $ip. Join ${credentials.ssid} and retry sync.")
+                    return@launch
+                }
+            }
+            wifiP2pManager.markConnected()
+
+            detail("Downloading media.config")
+            val result = runCatching {
+                mediaTransfer.sync(ip) { completed, total ->
+                    detail("Downloaded $completed of $total files", if (total == 0) 1f else completed.toFloat() / total)
+                }
+            }.getOrElse { error ->
+                detail(error.message ?: "Sync failed")
+                exitTransferMode(bridge)
+                return@launch
+            }
+
+            val newRecords = result.newRecords
+            updateState {
+                it.copy(
+                    transfer = it.transfer.copy(
+                        countsLabel = "Photos: ${newRecords.count { r -> IosMediaPlatform.isImage(r.filePath) }}  " +
+                            "Videos: ${newRecords.count { r -> IosMediaPlatform.isVideo(r.filePath) }}  " +
+                            "Audio: ${newRecords.count { r -> r.filename.endsWith(".opus", ignoreCase = true) }}",
+                    ),
+                )
+            }
+
+            var savedToPhotos = 0
+            newRecords.filter { IosMediaPlatform.isImage(it.filePath) || IosMediaPlatform.isVideo(it.filePath) }
+                .forEach { record ->
+                    if (IosMediaPlatform.saveToPhotoLibrary(record.filePath, IosMediaPlatform.isVideo(record.filePath))) {
+                        savedToPhotos++
+                    }
+                }
+            exitTransferMode(bridge)
+            detail("Sync complete: ${newRecords.size} new files, $savedToPhotos saved to Photos", 1f)
+
+            if (newRecords.isNotEmpty() && IosMediaPlatform.confirm(
+                    title = "Delete from glasses?",
+                    message = "${newRecords.size} files are now on this iPhone. Delete them from the glasses to free space?",
+                    confirmTitle = "Delete",
+                    cancelTitle = "Keep",
+                )
+            ) {
+                val deleted = newRecords.count { bridge.awaitDeleteMedia(it.filename) }
+                detail("Sync complete. Deleted $deleted of ${newRecords.size} files from the glasses.", 1f)
+                bridge.awaitMediaCounts()?.let { counts -> showMediaCounts(counts.photos, counts.videos, counts.audio) }
+            }
+        }
+    }
+
+    private suspend fun exitTransferMode(bridge: com.fersaiyan.cyanbridge.shared.ble.VendorGlassesBridge) {
+        // The official app leaves transfer mode after downloads so the glasses can capture again.
+        bridge.awaitModeAccepted(VendorGlassesMode.TRANSFER_STOP)
+        wifiP2pManager.disconnect()
     }
 
     private fun resetVendorState() {
@@ -962,6 +1227,7 @@ private class IosAppController {
     private fun stopSync() {
         syncJob?.cancel()
         syncJob = null
+        vendor?.let { bridge -> scope.launch { exitTransferMode(bridge) } }
         updateState { it.copy(transfer = GlassesTransferUiState(detail = "Sync stopped")) }
     }
 

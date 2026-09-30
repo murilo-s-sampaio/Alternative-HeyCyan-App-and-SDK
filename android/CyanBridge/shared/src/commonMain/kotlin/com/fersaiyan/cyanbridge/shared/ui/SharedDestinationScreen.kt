@@ -35,6 +35,7 @@ import com.fersaiyan.cyanbridge.shared.settings.SettingsSection
 import com.fersaiyan.cyanbridge.shared.settings.MemoryPrivacyMode
 import com.fersaiyan.cyanbridge.shared.settings.MemorySourceType
 import com.fersaiyan.cyanbridge.shared.platform.CyanBridgeServices
+import com.fersaiyan.cyanbridge.shared.platform.SharedMediaHooks
 import com.fersaiyan.cyanbridge.shared.platform.PlatformPreferences
 import com.fersaiyan.cyanbridge.shared.notes.NoteSummary
 import com.fersaiyan.cyanbridge.shared.platform.createPlatformPreferences
@@ -309,7 +310,9 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
     fun refresh() {
         scope.launch {
             if (CyanBridgeServices.isInitialized()) {
-                mediaItems = CyanBridgeServices.mediaRecordRepository.getAll().map { record ->
+                mediaItems = CyanBridgeServices.mediaRecordRepository.getAll()
+                    .sortedByDescending { it.downloadedAt }
+                    .map { record ->
                     SyncedMediaItem(
                         id = record.id.hashCode().toLong(),
                         displayName = record.filename,
@@ -328,12 +331,22 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
             mediaItems = mediaItems,
             isLoading = false,
              folderHint = stringResource(Res.string.media_folder_hint),
-            loadThumbnail = { _: String -> null },
+            loadThumbnail = { path: String -> SharedMediaHooks.loadThumbnail?.invoke(path) },
             onNavigateBack = { showGallery = false },
             onRefresh = ::refresh,
-            onOpenMedia = {},
-            onShareItems = {},
-            onDeleteItems = {},
+            onOpenMedia = { item -> SharedMediaHooks.openMedia?.invoke(item.contentUriString) },
+            onShareItems = { items -> SharedMediaHooks.shareMedia?.invoke(items.map { it.contentUriString }) },
+            onDeleteItems = { items ->
+                scope.launch {
+                    val paths = items.map { it.contentUriString }
+                    SharedMediaHooks.deleteMediaFiles?.invoke(paths)
+                    val repository = CyanBridgeServices.mediaRecordRepository
+                    repository.getAll()
+                        .filter { it.filePath in paths }
+                        .forEach { repository.delete(it.id) }
+                    refresh()
+                }
+            },
         )
     } else {
         RecordingsScreen(
@@ -346,9 +359,11 @@ private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Un
             transcriptionProgress = null,
             transcriptDialog = null,
              formatTimestamp = formatTimestamp,
-            loadThumbnail = { _: String -> null },
+            loadThumbnail = { path: String -> SharedMediaHooks.loadThumbnail?.invoke(path) },
             onOpenSyncedMedia = { showGallery = true },
-            onOpenSyncedMediaItem = { showGallery = true },
+            onOpenSyncedMediaItem = { item ->
+                SharedMediaHooks.openMedia?.invoke(item.contentUriString) ?: run { showGallery = true }
+            },
             onPlay = {},
             onTranscribe = {},
             onViewTranscript = {},

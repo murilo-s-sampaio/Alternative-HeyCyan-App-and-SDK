@@ -26,6 +26,18 @@ interface VendorGlassesBridge {
     fun requestVersion(completion: VendorVersionCallback)
     fun requestMediaCounts(completion: VendorMediaCountsCallback)
     fun syncTime(completion: VendorResultCallback)
+
+    /** Puts the glasses in a Wi-Fi mode and returns the hotspot SSID and passphrase. */
+    fun openWifi(mode: Int, completion: VendorWifiCallback)
+    fun requestWifiIp(completion: VendorTextCallback)
+    fun requestVolume(completion: VendorVolumeCallback)
+    fun requestWearingDetection(completion: VendorToggleCallback)
+    fun setWearingDetection(enabled: Boolean, completion: VendorResultCallback)
+    fun requestVideoSettings(completion: VendorRecordingSettingsCallback)
+    fun setVideoSettings(angle: Int, durationSeconds: Int, completion: VendorResultCallback)
+    fun requestAudioSettings(completion: VendorRecordingSettingsCallback)
+    fun setAudioSettings(angle: Int, durationSeconds: Int, completion: VendorResultCallback)
+    fun deleteMedia(filename: String, completion: VendorResultCallback)
 }
 
 fun interface VendorResultCallback {
@@ -53,6 +65,35 @@ fun interface VendorVersionCallback {
 
 fun interface VendorMediaCountsCallback {
     fun onResult(success: Boolean, photos: Int, videos: Int, audio: Int)
+}
+
+fun interface VendorWifiCallback {
+    fun onResult(success: Boolean, ssid: String, passphrase: String, currentMode: Int)
+}
+
+fun interface VendorTextCallback {
+    fun onResult(success: Boolean, value: String)
+}
+
+fun interface VendorToggleCallback {
+    fun onResult(success: Boolean, enabled: Boolean)
+}
+
+fun interface VendorRecordingSettingsCallback {
+    fun onResult(success: Boolean, angle: Int, durationSeconds: Int)
+}
+
+/** Current/max levels per QCVolumeInfoModel mode (music, call, system). */
+fun interface VendorVolumeCallback {
+    fun onResult(
+        success: Boolean,
+        musicCurrent: Int,
+        musicMax: Int,
+        callCurrent: Int,
+        callMax: Int,
+        systemCurrent: Int,
+        systemMax: Int,
+    )
 }
 
 /** Unsolicited updates pushed by the glasses through QCSDKManagerDelegate. */
@@ -133,3 +174,94 @@ suspend fun VendorGlassesBridge.awaitSyncTime(): Boolean = withTimeoutOrNull(VEN
         syncTime { success -> if (continuation.isActive) continuation.resume(success) }
     }
 } ?: false
+
+data class VendorWifiCredentials(val ssid: String, val passphrase: String)
+
+data class VendorRecordingSettings(val angle: Int, val durationSeconds: Int)
+
+data class VendorVolume(
+    val musicCurrent: Int,
+    val musicMax: Int,
+    val callCurrent: Int,
+    val callMax: Int,
+    val systemCurrent: Int,
+    val systemMax: Int,
+)
+
+suspend fun VendorGlassesBridge.awaitOpenWifi(mode: Int): VendorWifiCredentials? =
+    withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS * 2) {
+        suspendCancellableCoroutine { continuation ->
+            openWifi(mode) { success, ssid, passphrase, _ ->
+                if (continuation.isActive) {
+                    continuation.resume(if (success && ssid.isNotBlank()) VendorWifiCredentials(ssid, passphrase) else null)
+                }
+            }
+        }
+    }
+
+suspend fun VendorGlassesBridge.awaitWifiIp(): String? = withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS) {
+    suspendCancellableCoroutine { continuation ->
+        requestWifiIp { success, value ->
+            if (continuation.isActive) continuation.resume(value.takeIf { success && it.isNotBlank() })
+        }
+    }
+}
+
+suspend fun VendorGlassesBridge.awaitVolume(): VendorVolume? = withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS) {
+    suspendCancellableCoroutine { continuation ->
+        requestVolume { success, musicCurrent, musicMax, callCurrent, callMax, systemCurrent, systemMax ->
+            if (continuation.isActive) {
+                continuation.resume(
+                    if (success) VendorVolume(musicCurrent, musicMax, callCurrent, callMax, systemCurrent, systemMax) else null,
+                )
+            }
+        }
+    }
+}
+
+suspend fun VendorGlassesBridge.awaitWearingDetection(): Boolean? = withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS) {
+    suspendCancellableCoroutine { continuation ->
+        requestWearingDetection { success, enabled ->
+            if (continuation.isActive) continuation.resume(if (success) enabled else null)
+        }
+    }
+}
+
+suspend fun VendorGlassesBridge.awaitSetWearingDetection(enabled: Boolean): Boolean =
+    awaitResult { setWearingDetection(enabled, it) }
+
+suspend fun VendorGlassesBridge.awaitVideoSettings(): VendorRecordingSettings? =
+    awaitRecordingSettings { requestVideoSettings(it) }
+
+suspend fun VendorGlassesBridge.awaitAudioSettings(): VendorRecordingSettings? =
+    awaitRecordingSettings { requestAudioSettings(it) }
+
+suspend fun VendorGlassesBridge.awaitSetVideoSettings(angle: Int, durationSeconds: Int): Boolean =
+    awaitResult { setVideoSettings(angle, durationSeconds, it) }
+
+suspend fun VendorGlassesBridge.awaitSetAudioSettings(angle: Int, durationSeconds: Int): Boolean =
+    awaitResult { setAudioSettings(angle, durationSeconds, it) }
+
+suspend fun VendorGlassesBridge.awaitDeleteMedia(filename: String): Boolean =
+    awaitResult { deleteMedia(filename, it) }
+
+private suspend fun awaitResult(call: (VendorResultCallback) -> Unit): Boolean =
+    withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS) {
+        suspendCancellableCoroutine { continuation ->
+            call(VendorResultCallback { success -> if (continuation.isActive) continuation.resume(success) })
+        }
+    } ?: false
+
+private suspend fun awaitRecordingSettings(
+    call: (VendorRecordingSettingsCallback) -> Unit,
+): VendorRecordingSettings? = withTimeoutOrNull(VENDOR_COMMAND_TIMEOUT_MS) {
+    suspendCancellableCoroutine { continuation ->
+        call(
+            VendorRecordingSettingsCallback { success, angle, durationSeconds ->
+                if (continuation.isActive) {
+                    continuation.resume(if (success) VendorRecordingSettings(angle, durationSeconds) else null)
+                }
+            },
+        )
+    }
+}

@@ -51,6 +51,14 @@ Status: implementada; compila para iPhone e simulador e abre sem crash. Teste co
 
 ## Sprint 2 — Configurações dos óculos e transferência de mídia
 
+Status: implementada; compila para iPhone e simulador. Galeria validada no simulador com arquivo de teste; teste com os óculos pendente.
+
+Notas:
+- 2.4: o Android usa `SetAiWakeWordRoute` só como preferência (voz ou imagem); o iOS faz o mesmo. A palavra de ativação do SDK (`setVoiceWakeup`) fica para a Sprint 3, junto das perguntas.
+- 2.6: sem a entitlement de Hotspot (conta grátis), o app mostra SSID e senha e espera até 2 minutos a entrada manual, verificando por HTTP.
+- 2.10: ao fim da sincronização, um alerta nativo pergunta se deve apagar dos óculos os arquivos já salvos.
+- Bug corrigido junto: os registros de mídia guardavam o caminho absoluto, que muda quando o iOS reinstala ou atualiza o app.
+
 | # | Tarefa | Android (origem) | iOS (destino) |
 |---|---|---|---|
 | 2.1 | Volume (ler e ajustar) | `RequestVolume` | `getVolume`, `setVolume` |

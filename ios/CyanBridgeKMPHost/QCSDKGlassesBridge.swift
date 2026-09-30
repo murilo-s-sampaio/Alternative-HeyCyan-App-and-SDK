@@ -94,6 +94,115 @@ final class QCSDKGlassesBridge: NSObject, VendorGlassesBridge, QCSDKManagerDeleg
         }
     }
 
+    func openWifi(mode: Int32, completion: VendorWifiCallback) {
+        guard let deviceMode = QCOperatorDeviceMode(rawValue: Int(mode)) else {
+            completion.onResult(success: false, ssid: "", passphrase: "", currentMode: 0)
+            return
+        }
+        QCSDKCmdCreator.openWifi(with: deviceMode, success: { ssid, passphrase in
+            completion.onResult(success: true, ssid: ssid, passphrase: passphrase, currentMode: mode)
+        }, fail: { currentMode in
+            completion.onResult(success: false, ssid: "", passphrase: "", currentMode: Int32(currentMode))
+        })
+    }
+
+    func requestWifiIp(completion: VendorTextCallback) {
+        QCSDKCmdCreator.getDeviceWifiIPSuccess({ ip in
+            let value = ip ?? ""
+            completion.onResult(success: !value.isEmpty, value: value)
+        }, failed: {
+            completion.onResult(success: false, value: "")
+        })
+    }
+
+    func requestVolume(completion: VendorVolumeCallback) {
+        QCSDKCmdCreator.getVolumeWithFinished { success, _, result in
+            guard success, let info = result as? QCVolumeInfoModel else {
+                completion.onResult(success: false, musicCurrent: 0, musicMax: 0, callCurrent: 0, callMax: 0, systemCurrent: 0, systemMax: 0)
+                return
+            }
+            completion.onResult(
+                success: true,
+                musicCurrent: Int32(info.musicCurrent),
+                musicMax: Int32(info.musicMax),
+                callCurrent: Int32(info.callCurrent),
+                callMax: Int32(info.callMax),
+                systemCurrent: Int32(info.systemCurrent),
+                systemMax: Int32(info.systemMax)
+            )
+        }
+    }
+
+    func requestWearingDetection(completion: VendorToggleCallback) {
+        QCSDKCmdCreator.getWearingDetection { success, _, result in
+            guard success, let enabled = Self.boolValue(result) else {
+                completion.onResult(success: false, enabled: false)
+                return
+            }
+            completion.onResult(success: true, enabled: enabled)
+        }
+    }
+
+    func setWearingDetection(enabled: Bool, completion: VendorResultCallback) {
+        QCSDKCmdCreator.setWearingDetection(enabled) { success, _, _ in
+            completion.onResult(success: success)
+        }
+    }
+
+    func requestVideoSettings(completion: VendorRecordingSettingsCallback) {
+        QCSDKCmdCreator.getVideoInfoSuccess({ angle, duration in
+            completion.onResult(success: true, angle: Int32(angle), durationSeconds: Int32(duration))
+        }, fail: {
+            completion.onResult(success: false, angle: 0, durationSeconds: 0)
+        })
+    }
+
+    func setVideoSettings(angle: Int32, durationSeconds: Int32, completion: VendorResultCallback) {
+        QCSDKCmdCreator.setVideoInfo(Int(angle), duration: Int(durationSeconds), success: {
+            completion.onResult(success: true)
+        }, fail: {
+            completion.onResult(success: false)
+        })
+    }
+
+    func requestAudioSettings(completion: VendorRecordingSettingsCallback) {
+        QCSDKCmdCreator.getAudioInfoSuccess({ angle, duration in
+            completion.onResult(success: true, angle: Int32(angle), durationSeconds: Int32(duration))
+        }, fail: {
+            completion.onResult(success: false, angle: 0, durationSeconds: 0)
+        })
+    }
+
+    func setAudioSettings(angle: Int32, durationSeconds: Int32, completion: VendorResultCallback) {
+        QCSDKCmdCreator.setAudioInfo(Int(angle), duration: Int(durationSeconds), success: {
+            completion.onResult(success: true)
+        }, fail: {
+            completion.onResult(success: false)
+        })
+    }
+
+    func deleteMedia(filename: String, completion: VendorResultCallback) {
+        QCSDKCmdCreator.deleleteMedia(filename, success: {
+            completion.onResult(success: true)
+        }, fail: {
+            completion.onResult(success: false)
+        })
+    }
+
+    /// QCSDK returns toggle states as an untyped `id`; accept the shapes it is known to use.
+    private static func boolValue(_ result: Any?) -> Bool? {
+        switch result {
+        case let value as Bool:
+            return value
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as [AnyHashable: Any]:
+            return value.values.lazy.compactMap { ($0 as? NSNumber)?.boolValue }.first
+        default:
+            return nil
+        }
+    }
+
     // MARK: QCSDKManagerDelegate
 
     func didUpdateBatteryLevel(_ battery: Int, charging: Bool) {

@@ -4,6 +4,8 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>CyanBridge saves photos and videos imported from your glasses to your photo library.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 </dict>
