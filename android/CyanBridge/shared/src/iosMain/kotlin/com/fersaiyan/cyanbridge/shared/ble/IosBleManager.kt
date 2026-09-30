@@ -76,6 +76,12 @@ class IosBleManager : BleManager {
     override val connectionState: Flow<BleConnectionState> = _connectionState.asStateFlow()
 
     private val listeners = mutableListOf<BleNotificationListener>()
+
+    /** QCSDK bridge from the Swift host; HeyCyan sessions hand the peripheral to it. */
+    var vendorBridge: VendorGlassesBridge? = null
+    var attachVendorOnConnect: Boolean = false
+    private val _isVendorAttached = MutableStateFlow(false)
+    val isVendorAttached: StateFlow<Boolean> = _isVendorAttached.asStateFlow()
     private val centralDelegate = CentralDelegate()
     private val central = CBCentralManager(
         delegate = centralDelegate,
@@ -240,7 +246,10 @@ class IosBleManager : BleManager {
     fun onBluetoothStateChanged(enabled: Boolean) {
         _isBluetoothEnabled.value = enabled
         if (!enabled) {
-            connectedPeripheral?.let { central.cancelPeripheralConnection(it) }
+            connectedPeripheral?.let { peripheral ->
+                detachVendor(peripheral)
+                central.cancelPeripheralConnection(peripheral)
+            }
             pendingConnect?.resumeWithException(IllegalStateException("Bluetooth was disabled"))
             pendingBattery?.resume(null)
             pendingFirmware?.resume(null)
@@ -256,6 +265,13 @@ class IosBleManager : BleManager {
             pendingCommands.clear()
             _connectedDeviceMac.value = null
             _connectionState.value = BleConnectionState.DISCONNECTED
+        }
+    }
+
+    private fun detachVendor(peripheral: CBPeripheral) {
+        if (_isVendorAttached.value) {
+            vendorBridge?.detach(peripheral)
+            _isVendorAttached.value = false
         }
     }
 
@@ -300,13 +316,37 @@ class IosBleManager : BleManager {
             connectedPeripheral = didConnectPeripheral
             writeCharacteristic = null
             characteristicsReady = CompletableDeferred()
-            didConnectPeripheral.delegate = this
             _connectedDeviceMac.value = didConnectPeripheral.identifier.UUIDString
+            val bridge = vendorBridge?.takeIf { attachVendorOnConnect }
+            if (bridge == null) {
+                completeGenericConnection(didConnectPeripheral)
+                return
+            }
+            // QCSDK installs its own peripheral delegate, so the generic discovery is skipped.
+            bridge.attach(didConnectPeripheral) { success ->
+                scope.launch {
+                    if (connectedPeripheral !== didConnectPeripheral) return@launch
+                    if (success) {
+                        _isVendorAttached.value = true
+                        _connectionState.value = BleConnectionState.CONNECTED
+                        pendingConnect?.resume(Unit)
+                        pendingConnect = null
+                        PlatformLogger.i(TAG, "QCSDK attached to ${didConnectPeripheral.name ?: didConnectPeripheral.identifier.UUIDString}")
+                    } else {
+                        PlatformLogger.w(TAG, "QCSDK could not attach; using the generic BLE path")
+                        completeGenericConnection(didConnectPeripheral)
+                    }
+                }
+            }
+        }
+
+        fun completeGenericConnection(peripheral: CBPeripheral) {
+            peripheral.delegate = this
             _connectionState.value = BleConnectionState.CONNECTED
             pendingConnect?.resume(Unit)
             pendingConnect = null
-            didConnectPeripheral.discoverServices(null)
-            PlatformLogger.i(TAG, "Connected to ${didConnectPeripheral.name ?: didConnectPeripheral.identifier.UUIDString}")
+            peripheral.discoverServices(null)
+            PlatformLogger.i(TAG, "Connected to ${peripheral.name ?: peripheral.identifier.UUIDString}")
         }
 
         @ObjCSignatureOverride
@@ -330,6 +370,7 @@ class IosBleManager : BleManager {
             error: NSError?,
         ) {
             if (connectedPeripheral?.identifier?.UUIDString == didDisconnectPeripheral.identifier.UUIDString) {
+                detachVendor(didDisconnectPeripheral)
                 connectedPeripheral = null
                 writeCharacteristic = null
                 characteristicsReady.cancel()

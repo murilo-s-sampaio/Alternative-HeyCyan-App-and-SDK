@@ -34,6 +34,8 @@ A causa principal da diferença é o controle dos óculos: o Android usa o SDK d
 
 ## Sprint 1 — SDK do fabricante e controles básicos dos óculos
 
+Status: implementada; compila para iPhone e simulador e abre sem crash. Teste com os óculos pendente.
+
 | # | Tarefa | Android (origem) | iOS (destino) |
 |---|---|---|---|
 | 1.1 | Linkar `QCSDK.framework` no `CyanBridgeKMPHost` sem afetar o QCSDKDemo | `glasses_sdk.aar` | build settings do target |

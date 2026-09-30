@@ -25,9 +25,18 @@ import com.fersaiyan.cyanbridge.shared.billing.ProSubscriptionUiState
 import com.fersaiyan.cyanbridge.shared.ble.IosBleManager
 import com.fersaiyan.cyanbridge.shared.ble.BleConnectionState
 import com.fersaiyan.cyanbridge.shared.ble.BleNotificationListener
+import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesEventListener
+import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesMode
+import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesRegistry
+import com.fersaiyan.cyanbridge.shared.ble.awaitBattery
+import com.fersaiyan.cyanbridge.shared.ble.awaitMediaCounts
+import com.fersaiyan.cyanbridge.shared.ble.awaitModeAccepted
+import com.fersaiyan.cyanbridge.shared.ble.awaitSyncTime
+import com.fersaiyan.cyanbridge.shared.ble.awaitVersion
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardAction
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardUiState
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesTransferUiState
+import com.fersaiyan.cyanbridge.shared.devices.BleDeviceClassifier
 import com.fersaiyan.cyanbridge.shared.devices.DeviceClass
 import com.fersaiyan.cyanbridge.shared.devices.ScannedDevice
 import com.fersaiyan.cyanbridge.shared.media.IosMediaTransfer
@@ -68,6 +77,8 @@ import kotlin.coroutines.resume
 import platform.NetworkExtension.NEHotspotConfiguration
 import platform.NetworkExtension.NEHotspotConfigurationManager
 import platform.NetworkExtension.NEHotspotNetwork
+import platform.CoreBluetooth.CBAdvertisementDataServiceUUIDsKey
+import platform.CoreBluetooth.CBUUID
 import platform.Foundation.NSString
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.dataUsingEncoding
@@ -340,17 +351,23 @@ private data class IosDeviceBindUiState(
 )
 
 /** Named devices first, strongest signal first, like the Android bind list. */
-private fun List<ScannedDevice>.upsert(identifier: String, name: String?, rssi: Int): List<ScannedDevice> {
+private fun List<ScannedDevice>.upsert(
+    identifier: String,
+    name: String?,
+    rssi: Int,
+    detectedClass: DeviceClass,
+): List<ScannedDevice> {
     val sanitizedName = name?.trim()?.takeIf { it.isNotEmpty() }
     val existing = firstOrNull { it.macAddress == identifier }
     val updated = existing?.copy(
         advertisedName = existing.advertisedName ?: sanitizedName,
         rssi = rssi,
+        detectedClass = if (detectedClass != DeviceClass.UNKNOWN) detectedClass else existing.detectedClass,
     ) ?: ScannedDevice(
         macAddress = identifier,
         advertisedName = sanitizedName,
         rssi = rssi,
-        detectedClass = DeviceClass.UNKNOWN,
+        detectedClass = detectedClass,
         selectedClass = null,
         userOverridden = false,
     )
@@ -388,6 +405,8 @@ private class IosAppController {
     private var syncJob: Job? = null
     private var lastDiscoveredIdentifier: String? = null
     private var selectedDeviceClass: DeviceClass = DeviceClass.UNKNOWN
+    private val vendorBridge = VendorGlassesRegistry.bridge
+    private val vendor get() = vendorBridge?.takeIf { bleManager.isVendorAttached.value }
     private var isBleConnected = false
 
     init {
@@ -403,13 +422,40 @@ private class IosAppController {
                 }
             }
         })
+        bleManager.vendorBridge = vendorBridge
+        vendorBridge?.setEventListener(object : VendorGlassesEventListener {
+            override fun onBatteryChanged(level: Int, charging: Boolean) {
+                scope.launch { updateState { it.copy(batteryPercent = level, showBattery = true) } }
+            }
+
+            override fun onMediaCountsChanged(photos: Int, videos: Int, audio: Int) {
+                scope.launch { showMediaCounts(photos, videos, audio) }
+            }
+
+            override fun onAiImage(data: NSData) = Unit
+        })
         scope.launch {
             val selectedProfile = deviceProfileRepository.getAll()
                 .maxByOrNull { it.lastConnectedAt }
-            selectedDeviceClass = selectedProfile?.selectedClass
-                ?.let { value -> DeviceClass.entries.firstOrNull { it.name == value } }
-                ?: DeviceClass.UNKNOWN
-            updateConnectionCapabilities()
+            applySelectedClass(
+                selectedProfile?.selectedClass
+                    ?.let { value -> DeviceClass.entries.firstOrNull { it.name == value } }
+                    ?: DeviceClass.UNKNOWN,
+            )
+            // Android's AutoPair reconnects the last glasses on launch; do the same here.
+            val identifier = selectedProfile?.macAddress
+            if (identifier != null && selectedDeviceClass != DeviceClass.GENERIC_AUDIO) {
+                val poweredOn = withTimeoutOrNull(10_000L) { bleManager.isBluetoothEnabled.first { it } } ?: false
+                if (poweredOn && !isBleConnected) {
+                    lastDiscoveredIdentifier = identifier
+                    connectTo(identifier)
+                }
+            }
+        }
+        scope.launch {
+            bleManager.isVendorAttached.collect { attached ->
+                if (attached) onVendorConnected() else resetVendorState()
+            }
         }
         scope.launch {
             bleManager.connectionState.collect { connectionState ->
@@ -480,9 +526,23 @@ private class IosAppController {
             GlassesDashboardAction.RequestVersion -> requestVersion()
             GlassesDashboardAction.StartSync -> startSync()
             GlassesDashboardAction.StopSync -> stopSync()
-            GlassesDashboardAction.CapturePhoto -> sendGlassesCommand("camera", byteArrayOf(0x02, 0x01, 0x01))
-            GlassesDashboardAction.StartAudioRecording -> sendGlassesCommand("audio recording", byteArrayOf(0x02, 0x01, 0x08))
-            GlassesDashboardAction.RequestMediaCount -> sendGlassesCommand("media count", byteArrayOf(0x02, 0x04))
+            GlassesDashboardAction.CapturePhoto -> if (vendor != null) {
+                vendorMode(VendorGlassesMode.PHOTO, "Photo")
+            } else {
+                sendGlassesCommand("camera", byteArrayOf(0x02, 0x01, 0x01))
+            }
+            GlassesDashboardAction.ToggleVideo -> toggleVideo()
+            GlassesDashboardAction.StartAudioRecording -> if (vendor != null) {
+                toggleAudio()
+            } else {
+                sendGlassesCommand("audio recording", byteArrayOf(0x02, 0x01, 0x08))
+            }
+            GlassesDashboardAction.RequestMediaCount -> if (vendor != null) {
+                requestMediaCounts()
+            } else {
+                sendGlassesCommand("media count", byteArrayOf(0x02, 0x04))
+            }
+            GlassesDashboardAction.SyncTime -> syncTime()
             GlassesDashboardAction.ToggleAdvanced -> updateState { it.copy(advancedExpanded = !it.advancedExpanded) }
             is GlassesDashboardAction.Navigate -> Unit
             else -> updateState { it.copy(agentLastError = "This control is not implemented in the iOS host yet") }
@@ -501,7 +561,14 @@ private class IosAppController {
         scanJob = scope.launch {
             try {
                 bleManager.startScan(timeoutMs = 15_000L).collect { found ->
-                    updateBind { bind -> bind.copy(devices = bind.devices.upsert(found.identifier, found.name, found.rssi)) }
+                    val detected = BleDeviceClassifier.guessDeviceClass(
+                        advertisedName = found.name,
+                        serviceUuids = advertisedServiceUuids(found.advertisementData),
+                        heyCyanServiceUuids = vendorBridge?.serviceUuids.orEmpty(),
+                    )
+                    updateBind { bind ->
+                        bind.copy(devices = bind.devices.upsert(found.identifier, found.name, found.rssi, detected))
+                    }
                 }
             } finally {
                 updateBind { it.copy(isScanning = false) }
@@ -510,8 +577,19 @@ private class IosAppController {
     }
 
     fun selectDevice(device: ScannedDevice) {
-        updateBind { it.copy(connectingDevice = device, selectedClass = DeviceClass.HEY_CYAN) }
+        val pairingChoice = when (device.effectiveSelectedClass()) {
+            DeviceClass.META_RAYBAN -> DeviceClass.META_RAYBAN
+            DeviceClass.MEIZU_MYVU -> DeviceClass.MEIZU_MYVU
+            DeviceClass.GENERIC_AUDIO -> DeviceClass.GENERIC_AUDIO
+            else -> DeviceClass.HEY_CYAN
+        }
+        updateBind { it.copy(connectingDevice = device, selectedClass = pairingChoice) }
     }
+
+    private fun advertisedServiceUuids(advertisementData: Map<String, Any>): List<String> =
+        (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? List<*>)
+            .orEmpty()
+            .mapNotNull { (it as? CBUUID)?.UUIDString }
 
     fun selectDeviceClass(deviceClass: DeviceClass) {
         updateBind { it.copy(selectedClass = deviceClass) }
@@ -558,9 +636,8 @@ private class IosAppController {
 
     private fun saveProfileAndConnect(device: ScannedDevice, deviceClass: DeviceClass, connect: Boolean = true) {
         closeDeviceBind()
-        selectedDeviceClass = deviceClass
+        applySelectedClass(deviceClass)
         lastDiscoveredIdentifier = device.macAddress
-        updateConnectionCapabilities()
         scope.launch {
             deviceProfileRepository.upsert(
                 DeviceProfileEntity(
@@ -601,16 +678,126 @@ private class IosAppController {
 
     private fun requestBattery() {
         scope.launch {
-            val battery = runCatching { bleManager.requestBatteryLevel() }.getOrNull()
+            val battery = vendor?.let { bridge -> bridge.awaitBattery()?.first }
+                ?: runCatching { bleManager.requestBatteryLevel() }.getOrNull()
             updateState { it.copy(batteryPercent = battery, showBattery = battery != null) }
         }
     }
 
     private fun requestVersion() {
         scope.launch {
-            val version = runCatching { bleManager.requestFirmwareVersion() }.getOrNull()
-            updateState { it.copy(agentLastError = version?.let { value -> "Firmware: $value" } ?: "Firmware version unavailable") }
+            val bridge = vendor
+            val label = if (bridge != null) {
+                bridge.awaitVersion()?.let(::formatVendorVersion)
+            } else {
+                runCatching { bleManager.requestFirmwareVersion() }.getOrNull()?.let { "Firmware: $it" }
+            }
+            updateState {
+                it.copy(
+                    deviceInfoLabel = label ?: it.deviceInfoLabel,
+                    agentLastError = label ?: "Firmware version unavailable",
+                )
+            }
         }
+    }
+
+    // ── HeyCyan vendor SDK (QCSDK) session ──
+
+    private suspend fun onVendorConnected() {
+        updateState { it.copy(agentLastError = "") }
+        vendor?.awaitSyncTime()
+        val bridge = vendor ?: return
+        bridge.awaitBattery()?.let { (level, _) -> updateState { it.copy(batteryPercent = level, showBattery = true) } }
+        bridge.awaitVersion()?.let { info -> updateState { it.copy(deviceInfoLabel = formatVendorVersion(info)) } }
+        bridge.awaitMediaCounts()?.let { counts -> showMediaCounts(counts.photos, counts.videos, counts.audio) }
+    }
+
+    private fun resetVendorState() {
+        updateState {
+            it.copy(
+                isVideoRecording = false,
+                isAudioRecording = false,
+                showStorage = false,
+                storageLabel = "--",
+            )
+        }
+    }
+
+    private fun vendorMode(mode: Int, label: String, onAccepted: () -> Unit = {}) {
+        val bridge = vendor ?: run {
+            updateState { it.copy(agentLastError = "$label needs HeyCyan glasses connected through the vendor SDK") }
+            return
+        }
+        scope.launch {
+            if (bridge.awaitModeAccepted(mode)) {
+                onAccepted()
+                updateState { it.copy(agentLastError = "") }
+            } else {
+                updateState { it.copy(agentLastError = "$label was rejected by the glasses (they may be busy)") }
+            }
+        }
+    }
+
+    private fun toggleVideo() {
+        val recording = _dashboardState.value.isVideoRecording
+        vendorMode(if (recording) VendorGlassesMode.VIDEO_STOP else VendorGlassesMode.VIDEO, "Video recording") {
+            updateState { it.copy(isVideoRecording = !recording) }
+        }
+    }
+
+    private fun toggleAudio() {
+        val recording = _dashboardState.value.isAudioRecording
+        vendorMode(if (recording) VendorGlassesMode.AUDIO_STOP else VendorGlassesMode.AUDIO, "Audio recording") {
+            updateState { it.copy(isAudioRecording = !recording) }
+        }
+    }
+
+    private fun requestMediaCounts() {
+        val bridge = vendor ?: return
+        scope.launch {
+            val counts = bridge.awaitMediaCounts()
+            if (counts != null) {
+                showMediaCounts(counts.photos, counts.videos, counts.audio)
+            } else {
+                updateState { it.copy(agentLastError = "Media count unavailable") }
+            }
+        }
+    }
+
+    private fun syncTime() {
+        val bridge = vendor ?: run {
+            updateState { it.copy(agentLastError = "Clock sync needs HeyCyan glasses connected through the vendor SDK") }
+            return
+        }
+        scope.launch {
+            val synced = bridge.awaitSyncTime()
+            updateState { it.copy(agentLastError = if (synced) "Glasses clock synced" else "Clock sync failed") }
+        }
+    }
+
+    private fun showMediaCounts(photos: Int, videos: Int, audio: Int) {
+        updateState {
+            it.copy(
+                storageLabel = "$photos photos / $videos videos / $audio audio",
+                showStorage = true,
+                transfer = it.transfer.copy(countsLabel = "Photos: $photos  Videos: $videos  Audio: $audio"),
+            )
+        }
+    }
+
+    private fun formatVendorVersion(info: com.fersaiyan.cyanbridge.shared.ble.VendorVersionInfo): String =
+        listOf(
+            "BT FW: ${info.firmware}",
+            "BT HW: ${info.hardware}",
+            "Wi-Fi FW: ${info.wifiFirmware}",
+            "Wi-Fi HW: ${info.wifiHardware}",
+        ).joinToString("\n")
+
+    private fun applySelectedClass(deviceClass: DeviceClass) {
+        selectedDeviceClass = deviceClass
+        bleManager.attachVendorOnConnect = deviceClass == DeviceClass.HEY_CYAN
+        updateState { it.copy(deviceClassLabel = deviceClass.displayName()) }
+        updateConnectionCapabilities()
     }
 
     private fun startSync() {

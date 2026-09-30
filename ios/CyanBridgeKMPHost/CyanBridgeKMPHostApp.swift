@@ -3,6 +3,10 @@ import CyanBridgeShared
 
 @main
 struct CyanBridgeKMPHostApp: App {
+    init() {
+        VendorGlassesSetup.register()
+    }
+
     var body: some Scene {
         WindowGroup {
             ComposeView()

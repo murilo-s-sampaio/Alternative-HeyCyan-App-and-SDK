@@ -1,6 +1,6 @@
 # CyanBridge KMP iOS Host
 
-`CyanBridgeKMPHost` is the simulator-targeted iOS host for the `:shared` Kotlin Multiplatform framework. `QCSDKDemo` remains an isolated vendor/device reference target. Neither target is a claim of feature parity or vendor framework support.
+`CyanBridgeKMPHost` is the iOS host for the `:shared` Kotlin Multiplatform framework. It runs on the simulator and on iPhone; device builds link `QCSDK.framework` for HeyCyan glasses. `QCSDKDemo` remains an isolated vendor/device reference target. Neither target is a claim of feature parity or vendor framework support.
 
 ## Current Scope
 
@@ -25,7 +25,7 @@ The shared iOS sync path follows the device-reported transfer sequence:
 4. Join the glasses hotspot with `NEHotspotConfiguration` when credentials are available.
 5. Re-check the active iOS SSID before requesting `/files/media.config`.
 
-`CyanBridgeKMPHost` intentionally does not link the opaque `QCSDK.framework`, so it cannot call `QCSDKCmdCreator.openWifiWithMode:success:fail:` itself. A physical host that does link QCSDK should pass the successful callback's credentials to the exported Kotlin seam:
+Device builds of `CyanBridgeKMPHost` link `QCSDK.framework` (see "Vendor SDK bridge" below). The host should pass the successful `QCSDKCmdCreator.openWifiWithMode:success:fail:` callback's credentials to the exported Kotlin seam:
 
 ```text
 IosTransferModeConfiguration.configurePreparedHotspot(ssid, passphrase)
@@ -36,6 +36,15 @@ When the host also receives the IP from QCSDK's `getDeviceWifiIPSuccess` callbac
 The seam can also be configured with `configureHotspot` when the host has credentials but still wants the shared flow to send the documented transfer command. It never supplies the legacy hard-coded password. If neither credentials nor an already-connected iOS transfer network is available, the UI reports the missing host setup instead of claiming that Wi-Fi Direct is connected. The BLE-reported IP and `/files/media.config` handling remain the source of truth for the HTTP transfer.
 
 The KMP host target includes the Hotspot Configuration and Wi-Fi information entitlements, plus the CoreBluetooth and NetworkExtension link flags required by the iOS adapters. These capabilities do not turn iOS into an Android-style Wi-Fi Direct peer; `supportsTrueWifiDirect` remains false on the iOS adapter.
+
+## Vendor SDK bridge
+
+HeyCyan glasses are driven through QCSDK, the iOS counterpart of Android's `glasses_sdk` AAR:
+
+- `shared/src/iosMain/.../ble/VendorGlassesBridge.kt` defines the contract (`attach`, `setDeviceMode`, battery, version, media counts, time sync, and pushed events).
+- `ios/CyanBridgeKMPHost/QCSDKGlassesBridge.swift` implements it with `QCSDKManager` / `QCSDKCmdCreator` and registers it in `VendorGlassesRegistry` at app start.
+- `IosBleManager` still owns scanning and connecting. When the selected class is HeyCyan, it hands the connected `CBPeripheral` to `QCSDKManager` instead of running generic service discovery, and falls back to the generic path if QCSDK rejects it.
+- Simulator builds have no bridge; the dashboard reports that vendor controls need a device build.
 
 ## Mac Setup
 
@@ -114,7 +123,7 @@ Both Android and iOS share the same CMP `MaterialTheme` from `org.jetbrains.comp
 
 - Linux can configure the Apple targets and compile shared common code, but cannot link or run iOS binaries. A Mac with Xcode is required for those checks.
 - On Linux, run `python3 ios/scripts/verify_kmp_host.py` from the repository root to statically confirm project wiring. The full build pipeline requires the GitHub Actions macOS runner or a local Mac.
-- `QCSDK.framework` is presently an opaque static archive from the vendor demo. Its inspected objects are arm64 only; simulator platform compatibility, current Xcode compatibility, license, and device behavior remain unverified. `CyanBridgeKMPHost` intentionally does not link it.
+- `QCSDK.framework` is presently an opaque static archive from the vendor demo. Its objects are arm64 device only, so `CyanBridgeKMPHost` links it only for `sdk=iphoneos*` and the Swift bridge compiles behind `#if canImport(QCSDK)`. License and full device behavior remain unverified.
 - `GlassesWiFiHandler` contains a legacy hard-coded hotspot-password workaround. It is reference-only; the KMP host requires credentials from its QCSDK integration or an already-connected hotspot.
 - The GitHub Actions CI uses GitHub's hosted Apple Silicon runners. Private repositories consume billed Actions minutes (macOS is charged at $0.062/minute after the free quota). Public repositories run macOS jobs free of charge.
 - Simulator validation can verify CMP rendering, framework linking, Swift compilation, SwiftUI rendering, and app launch, but it cannot validate Bluetooth pairing, Wi-Fi hotspot joining, QCSDK behavior, or media transfer from physical glasses. Those require a real iPhone near the glasses and are deferred.
