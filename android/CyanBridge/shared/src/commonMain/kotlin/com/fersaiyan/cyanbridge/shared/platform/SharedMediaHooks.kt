@@ -8,6 +8,12 @@ import androidx.compose.ui.graphics.ImageBitmap
  */
 object SharedMediaHooks {
     var loadThumbnail: (suspend (path: String) -> ImageBitmap?)? = null
+
+    /** Full-size decode (capped for memory), e.g. for a chat wallpaper. */
+    var loadImage: (suspend (path: String) -> ImageBitmap?)? = null
+
+    /** Writes bytes to the app's documents folder and returns the absolute path. */
+    var saveDocument: ((name: String, bytes: ByteArray) -> String?)? = null
     var openMedia: ((path: String) -> Unit)? = null
     var shareMedia: ((paths: List<String>) -> Unit)? = null
 

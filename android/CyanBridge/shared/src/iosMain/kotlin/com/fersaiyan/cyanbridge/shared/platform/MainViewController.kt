@@ -28,6 +28,8 @@ import com.fersaiyan.cyanbridge.shared.ble.BleNotificationListener
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesEventListener
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesMode
 import com.fersaiyan.cyanbridge.shared.ble.VendorGlassesRegistry
+import com.fersaiyan.cyanbridge.shared.ble.VendorAiSpeakMode
+import com.fersaiyan.cyanbridge.shared.ble.awaitAiSpeakMode
 import com.fersaiyan.cyanbridge.shared.ble.awaitAudioSettings
 import com.fersaiyan.cyanbridge.shared.ble.awaitBattery
 import com.fersaiyan.cyanbridge.shared.ble.awaitDeleteMedia
@@ -44,6 +46,7 @@ import com.fersaiyan.cyanbridge.shared.ble.awaitModeAccepted
 import com.fersaiyan.cyanbridge.shared.ble.awaitSyncTime
 import com.fersaiyan.cyanbridge.shared.ble.awaitVersion
 import com.fersaiyan.cyanbridge.shared.glasses.AiWakeWordRoute
+import com.fersaiyan.cyanbridge.shared.glasses.GlassesAssistantMode
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardAction
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesDashboardUiState
 import com.fersaiyan.cyanbridge.shared.glasses.GlassesTransferUiState
@@ -62,6 +65,9 @@ import com.fersaiyan.cyanbridge.shared.persistence.IosMediaRecordRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosMemoryVaultRepository
 import com.fersaiyan.cyanbridge.shared.persistence.IosNotesRepository
 import com.fersaiyan.cyanbridge.shared.ui.CyanBridgeApp
+import com.fersaiyan.cyanbridge.shared.ui.sharedDefaultImageQuestion
+import com.fersaiyan.cyanbridge.shared.persistence.ChatEntity
+import com.fersaiyan.cyanbridge.shared.persistence.ChatMessageEntity
 import com.fersaiyan.cyanbridge.shared.ui.DeviceBindScreen
 import com.fersaiyan.cyanbridge.shared.ui.theme.CyanBridgeMaterialTheme
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -104,6 +110,9 @@ private const val IOS_MANUAL_JOIN_TIMEOUT_MS = 120_000L
 private const val IOS_GLASSES_PREFERENCES = "cyanbridge_ios_glasses"
 private const val PREF_AI_WAKE_ROUTE = "ai_wake_word_route"
 private const val PREF_THUMBNAIL_QUALITY = "image_thumbnail_quality"
+private const val PREF_ASSISTANT_MODE = "assistant_mode"
+private const val GLASSES_CHAT_ID = "glasses-assistant"
+private const val VOICE_QUESTION_WINDOW_MS = 6_000L
 // Same option lists as Android's MainActivity for HeyCyan recording limits.
 private val VIDEO_DURATION_OPTIONS_SECONDS = listOf(15, 30, 60, 180, 540, 720)
 private val AUDIO_DURATION_OPTIONS_SECONDS = listOf(1_800, 3_600, 7_200)
@@ -435,6 +444,9 @@ private class IosAppController {
     val memoryVaultRepository = IosMemoryVaultRepository()
     val mediaRecordRepository = IosMediaRecordRepository()
     private val mediaTransfer = IosMediaTransfer(mediaRecordRepository)
+    private val chatAiService = IosRelayChatAiService()
+    private val voiceAiService = IosRelayVoiceAiService()
+    private val imageAiService = IosRelayImageAiService()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _dashboardState = MutableStateFlow(
@@ -473,11 +485,15 @@ private class IosAppController {
             }
         })
         IosMediaPlatform.installSharedMediaHooks()
+        IosChatPlatform.installSharedChatHooks()
         bleManager.vendorBridge = vendorBridge
         val thumbnailQuality = glassesPreferences.getInt(PREF_THUMBNAIL_QUALITY, 4)
         updateState {
             it.copy(
                 aiWakeWordRoute = AiWakeWordRoute.fromRaw(glassesPreferences.getString(PREF_AI_WAKE_ROUTE, "")),
+                assistantMode = GlassesAssistantMode.entries.firstOrNull {
+                    it.name == glassesPreferences.getString(PREF_ASSISTANT_MODE, "")
+                } ?: GlassesAssistantMode.PHONE_ASSISTANT,
                 imageThumbnailQualitySdkValue = thumbnailQuality,
                 imageThumbnailQualityLabel = THUMBNAIL_QUALITY_LABELS[thumbnailQuality] ?: "Clearer",
             )
@@ -491,7 +507,11 @@ private class IosAppController {
                 scope.launch { showMediaCounts(photos, videos, audio) }
             }
 
-            override fun onAiImage(data: NSData) = Unit
+            override fun onAiImage(data: NSData) {
+                // Fired by the glasses' AI photo button and by TestImageQuestion.
+                val bytes = data.toKotlinBytes()
+                scope.launch { answerImageQuestion(bytes) }
+            }
         })
         scope.launch {
             val selectedProfile = deviceProfileRepository.getAll()
@@ -569,9 +589,9 @@ private class IosAppController {
             deviceProfileRepository = deviceProfileRepository,
             memoryVaultRepository = memoryVaultRepository,
             mediaRecordRepository = mediaRecordRepository,
-            chatAiService = IosRelayChatAiService(),
-            voiceAiService = IosRelayVoiceAiService(),
-            imageAiService = IosRelayImageAiService(),
+            chatAiService = chatAiService,
+            voiceAiService = voiceAiService,
+            imageAiService = imageAiService,
             aiModelRegistry = IosRelayAiModelRegistry(),
         )
     }
@@ -603,6 +623,14 @@ private class IosAppController {
             }
             GlassesDashboardAction.SyncTime -> syncTime()
             GlassesDashboardAction.RequestVolume -> requestVolume()
+            GlassesDashboardAction.TestImageQuestion -> vendorMode(VendorGlassesMode.AI_PHOTO, "Image question") {
+                updateState { it.copy(agentLastError = "Waiting for the glasses photo…") }
+            }
+            GlassesDashboardAction.TestVoiceQuestion -> scope.launch { answerVoiceQuestion() }
+            is GlassesDashboardAction.SelectAssistantMode -> {
+                glassesPreferences.putString(PREF_ASSISTANT_MODE, action.mode.name)
+                updateState { it.copy(assistantMode = action.mode) }
+            }
             is GlassesDashboardAction.SetWearingDetection -> setWearingDetection(action.enabled)
             GlassesDashboardAction.RefreshRecordingSettings -> refreshRecordingSettings(showErrors = true)
             is GlassesDashboardAction.SetVideoRecordingDuration -> setRecordingDuration(isAudio = false, seconds = action.seconds)
@@ -865,6 +893,56 @@ private class IosAppController {
                 updateState { it.copy(agentLastError = "Recording limit change failed") }
             }
         }
+    }
+
+    // ── AI questions from the glasses (Android: ImageQuestion / VoiceQuestion flows) ──
+
+    private suspend fun answerImageQuestion(image: ByteArray) {
+        val question = sharedDefaultImageQuestion()
+        updateState { it.copy(agentLastError = "Analyzing the glasses photo…") }
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
+        val reply = runCatching { imageAiService.analyzeImage(image, question) }
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
+        deliverAnswer("📷 $question", reply)
+    }
+
+    private suspend fun answerVoiceQuestion() {
+        updateState { it.copy(agentLastError = "Listening… ask your question") }
+        val audio = IosChatPlatform.recordFor(VOICE_QUESTION_WINDOW_MS)
+        if (audio == null) {
+            updateState { it.copy(agentLastError = "Microphone access is needed for voice questions") }
+            return
+        }
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
+        val question = runCatching { voiceAiService.transcribe(audio, SharedChatHooks.audioMimeType) }.getOrNull()
+        if (question.isNullOrBlank()) {
+            vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
+            updateState { it.copy(agentLastError = "Could not understand the question") }
+            return
+        }
+        val reply = runCatching {
+            chatAiService.chat(listOf(com.fersaiyan.cyanbridge.shared.ai.ChatMessage("user", question))).message.content
+        }
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
+        deliverAnswer(question, reply)
+    }
+
+    /** Speaks the reply through the glasses audio and keeps it in the "Glasses" chat. */
+    private suspend fun deliverAnswer(question: String, reply: Result<String>) {
+        val answer = reply.getOrElse { error ->
+            updateState { it.copy(agentLastError = "AI request failed: ${error.message ?: "unknown error"}") }
+            return
+        }
+        updateState { it.copy(agentLastError = answer) }
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.START)
+        IosChatPlatform.speak(answer)
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.STOP)
+        val now = platformCurrentTimeMillis()
+        if (chatRepository.getChat(GLASSES_CHAT_ID) == null) {
+            chatRepository.insertChat(ChatEntity(id = GLASSES_CHAT_ID, title = "Glasses", createdAt = now, updatedAt = now))
+        }
+        chatRepository.insertMessage(ChatMessageEntity("user-$now", GLASSES_CHAT_ID, "user", question, now))
+        chatRepository.insertMessage(ChatMessageEntity("assistant-$now", GLASSES_CHAT_ID, "assistant", answer, now + 1))
     }
 
     private fun reportVendorRequired(label: String) {

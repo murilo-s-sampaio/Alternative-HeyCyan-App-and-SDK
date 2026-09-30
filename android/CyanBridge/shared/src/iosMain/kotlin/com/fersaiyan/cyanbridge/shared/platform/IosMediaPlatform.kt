@@ -54,6 +54,11 @@ object IosMediaPlatform {
     /** Installs the shared gallery hooks; Android leaves them unset. */
     fun installSharedMediaHooks() {
         SharedMediaHooks.loadThumbnail = ::loadThumbnail
+        SharedMediaHooks.loadImage = ::loadImage
+        SharedMediaHooks.saveDocument = { name, bytes ->
+            val path = PlatformFilePaths.dataDirectory() + "/" + name
+            if (writeFile(path, bytes)) path else null
+        }
         SharedMediaHooks.openMedia = ::openMedia
         SharedMediaHooks.shareMedia = ::shareMedia
         SharedMediaHooks.deleteMediaFiles = { paths -> paths.forEach(::deleteFile) }
@@ -64,6 +69,12 @@ object IosMediaPlatform {
         val thumbnail = image?.imageByPreparingThumbnailOfSize(CGSizeMake(THUMBNAIL_SIZE, THUMBNAIL_SIZE)) ?: image
         val jpeg = thumbnail?.let { UIImageJPEGRepresentation(it, 0.8) } ?: return@withContext null
         runCatching { Image.makeFromEncoded(jpeg.toKotlinBytes()).toComposeImageBitmap() }.getOrNull()
+    }
+
+    suspend fun loadImage(path: String): ImageBitmap? = withContext(Dispatchers.Default) {
+        val data = NSData.dataWithContentsOfFile(path) ?: return@withContext null
+        val jpeg = IosChatPlatform.jpegForUpload(data) ?: return@withContext null
+        runCatching { Image.makeFromEncoded(jpeg).toComposeImageBitmap() }.getOrNull()
     }
 
     fun openMedia(path: String) {
@@ -149,7 +160,7 @@ object IosMediaPlatform {
         return UIImage.imageWithCGImage(frame)
     }
 
-    private fun topViewController(): UIViewController? {
+    internal fun topViewController(): UIViewController? {
         @Suppress("DEPRECATION")
         var controller = UIApplication.sharedApplication.keyWindow?.rootViewController ?: return null
         while (true) {

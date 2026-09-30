@@ -189,6 +189,16 @@ final class QCSDKGlassesBridge: NSObject, VendorGlassesBridge, QCSDKManagerDeleg
         })
     }
 
+    func setAiSpeakMode(mode: Int32, completion: VendorResultCallback) {
+        guard let speakMode = QGAISpeakMode(rawValue: Int(mode)) else {
+            completion.onResult(success: false)
+            return
+        }
+        QCSDKCmdCreator.setAISpeekModel(speakMode) { success, _ in
+            completion.onResult(success: success)
+        }
+    }
+
     /// QCSDK returns toggle states as an untyped `id`; accept the shapes it is known to use.
     private static func boolValue(_ result: Any?) -> Bool? {
         switch result {

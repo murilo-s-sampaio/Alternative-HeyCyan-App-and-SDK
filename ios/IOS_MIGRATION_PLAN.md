@@ -74,6 +74,16 @@ Notas:
 
 ## Sprint 3 — Conversas, notas e perguntas à IA
 
+Status: implementada; compila para iPhone e simulador e abre sem crash. Aba Conversas conferida no simulador; notas, anexos, voz e perguntas dos óculos precisam de teste no iPhone.
+
+Notas:
+- 3.5/3.7: as respostas são faladas pelo áudio atual (os óculos, quando conectados como fone Bluetooth) e ficam salvas na conversa "Glasses". A pergunta por voz grava uma janela fixa de 6 segundos, preferindo o microfone Bluetooth dos óculos.
+- 3.5: a pergunta usada para as fotos é a "pergunta padrão da imagem" de Configurações, que agora é salva no iOS.
+- 3.8: o modo do assistente fica salvo; os dois modos usam o relay CyanBridge no iOS até o provedor de IA personalizado ser ligado.
+- 3.9: as cores dos balões alternam entre paletas prontas (o Android abre um seletor de cor).
+- Qualidade da miniatura da imagem: a escolha fica salva, mas o SDK iOS não expõe esse ajuste.
+- Sincronização de notas com o Obsidian continua só no Android.
+
 | # | Tarefa | Android (origem) | iOS (destino) |
 |---|---|---|---|
 | 3.1 | Notas na aba Conversas (hoje `notes = emptyList()` no iOS) | `NotesRepository` | `IosNotesRepository` |

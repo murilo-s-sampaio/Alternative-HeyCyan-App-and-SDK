@@ -38,6 +38,9 @@ interface VendorGlassesBridge {
     fun requestAudioSettings(completion: VendorRecordingSettingsCallback)
     fun setAudioSettings(angle: Int, durationSeconds: Int, completion: VendorResultCallback)
     fun deleteMedia(filename: String, completion: VendorResultCallback)
+
+    /** Drives the glasses' AI speaking/thinking indicator (QGAISpeakMode raw values). */
+    fun setAiSpeakMode(mode: Int, completion: VendorResultCallback)
 }
 
 fun interface VendorResultCallback {
@@ -115,6 +118,14 @@ object VendorGlassesMode {
     const val AUDIO = 0x08
     const val TRANSFER_STOP = 0x09
     const val AUDIO_STOP = 0x0C
+}
+
+/** Raw values of QCSDK's QGAISpeakMode. */
+object VendorAiSpeakMode {
+    const val START = 0x01
+    const val STOP = 0x03
+    const val THINKING_START = 0x04
+    const val THINKING_STOP = 0x06
 }
 
 /** The Swift host registers its bridge here before creating the Compose controller. */
@@ -265,3 +276,5 @@ private suspend fun awaitRecordingSettings(
         )
     }
 }
+
+suspend fun VendorGlassesBridge.awaitAiSpeakMode(mode: Int): Boolean = awaitResult { setAiSpeakMode(mode, it) }

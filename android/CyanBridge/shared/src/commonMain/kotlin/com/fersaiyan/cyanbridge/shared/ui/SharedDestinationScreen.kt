@@ -98,209 +98,6 @@ fun SharedDestinationScreen(
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
-private fun SharedChatsDestination(onDestinationSelected: (AppDestination) -> Unit) {
-    val scope = rememberCoroutineScope()
-    val newChatTitle = stringResource(Res.string.action_new_chat)
-    val formatTimestamp = sharedTimestampFormatter()
-    var threads by remember { mutableStateOf<List<ChatThreadSummary>>(emptyList()) }
-    var notes by remember { mutableStateOf<List<NoteSummary>>(emptyList()) }
-    var pendingDelete by remember { mutableStateOf<ChatThreadSummary?>(null) }
-    var selectedThreadId by remember { mutableStateOf<String?>(null) }
-    var selectedTab by remember { mutableStateOf(NotesChatsTab.CHATS) }
-
-    fun refreshChats() {
-        scope.launch {
-            if (CyanBridgeServices.isInitialized()) {
-                threads = CyanBridgeServices.chatRepository.getAllChats()
-                    .map { ChatThreadSummary(it.id, it.title, it.updatedAt) }
-                    .sortedByDescending { it.updatedAtEpochMillis }
-            }
-        }
-    }
-
-    fun refreshNotes() {
-        scope.launch {
-            if (CyanBridgeServices.isInitialized()) {
-                // IosNotesRepository exposes notes via CyanBridgeServices.notesRepository
-                // It is a shared interface; collect as flow if available via portability.
-                // For iOS host we keep empty placeholder until notes channel is wired.
-                // This prevents crash and keeps M3 Expressive tab functional.
-                notes = emptyList()
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        refreshChats()
-        refreshNotes()
-    }
-
-    val selectedThread = threads.firstOrNull { it.id == selectedThreadId }
-    if (selectedThread != null) {
-        SharedChatThreadDestination(
-            threadSummary = selectedThread,
-            onBack = { selectedThreadId = null },
-            onDestinationSelected = onDestinationSelected,
-        )
-        return
-    }
-
-    NotesChatsScreen(
-        selectedTab = selectedTab,
-        onTabSelected = { selectedTab = it },
-        threads = threads,
-        pendingDelete = pendingDelete,
-        notes = notes,
-        formatTimestamp = formatTimestamp,
-        onOpenThread = { selectedThreadId = it.id },
-        onRequestDelete = { pendingDelete = it },
-        onConfirmDelete = {
-            val thread = pendingDelete
-            pendingDelete = null
-            if (thread != null) {
-                scope.launch {
-                    if (CyanBridgeServices.isInitialized()) {
-                        CyanBridgeServices.chatRepository.deleteChat(thread.id)
-                        refreshChats()
-                    }
-                }
-            }
-        },
-        onDismissDelete = { pendingDelete = null },
-        onNewChat = {
-            val now = sharedNowMillis()
-            val id = "ios-$now"
-            scope.launch {
-                if (CyanBridgeServices.isInitialized()) {
-                    CyanBridgeServices.chatRepository.insertChat(
-                        ChatEntity(
-                            id = id,
-                            title = newChatTitle,
-                            createdAt = now,
-                            updatedAt = now,
-                        ),
-                    )
-                    refreshChats()
-                    selectedThreadId = id
-                }
-            }
-        },
-        onOpenNote = {},
-        onNewNote = {},
-        onChatAppearance = {},
-        onOpenNotesSettings = {},
-        onDestinationSelected = onDestinationSelected,
-        showNavigationBar = false,
-    )
-}
-
-@OptIn(ExperimentalResourceApi::class)
-@Composable
-private fun SharedChatThreadDestination(
-    threadSummary: ChatThreadSummary,
-    onBack: () -> Unit,
-    onDestinationSelected: (AppDestination) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var messages by remember(threadSummary.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
-    var composerText by remember(threadSummary.id) { mutableStateOf("") }
-    var isThinking by remember(threadSummary.id) { mutableStateOf(false) }
-    var statusText by remember(threadSummary.id) { mutableStateOf<String?>(null) }
-    val chatRequestFailed = stringResource(Res.string.chat_request_failed)
-
-    fun reloadMessages() {
-        scope.launch {
-            if (CyanBridgeServices.isInitialized()) {
-                messages = CyanBridgeServices.chatRepository.getMessages(threadSummary.id)
-                    .map(ChatMessageEntity::toSharedMessage)
-            }
-        }
-    }
-
-    LaunchedEffect(threadSummary.id) { reloadMessages() }
-
-    ChatThreadScreen(
-        state = ChatThreadUiState(
-            thread = ChatThread(
-                id = threadSummary.id,
-                title = threadSummary.title,
-                createdAt = 0L,
-                updatedAt = threadSummary.updatedAtEpochMillis,
-            ),
-            messages = messages,
-            composerText = composerText,
-            isGenerating = isThinking,
-            statusText = statusText,
-        ),
-        messages = messages,
-        composer = ChatComposerUiState(isMediaEnabled = false),
-        attachments = ChatAttachmentsUiState(),
-        modelBadge = if (CyanBridgeServices.isInitialized()) {
-            CyanBridgeServices.aiModelRegistry.getDefaultModelId()
-        } else {
-            null
-        },
-        dailySummaryProgress = null,
-        dailyReviewQueueStatus = statusText,
-        userBubbleColor = null,
-        assistantBubbleColor = null,
-        wallpaper = null,
-        isThinking = isThinking,
-        onOpenChatList = onBack,
-        onChatAppearance = {},
-        onComposerTextChanged = { composerText = it },
-        onPrimaryAction = {
-            val text = composerText.trim()
-            if (text.isNotEmpty() && !isThinking) {
-                composerText = ""
-                scope.launch {
-                    if (!CyanBridgeServices.isInitialized()) return@launch
-                    val now = sharedNowMillis()
-                    isThinking = true
-                    statusText = null
-                    CyanBridgeServices.chatRepository.insertMessage(
-                        ChatMessageEntity(
-                            id = "user-$now",
-                            chatId = threadSummary.id,
-                            role = "user",
-                            content = text,
-                            timestamp = now,
-                        ),
-                    )
-                    val history = CyanBridgeServices.chatRepository.getMessages(threadSummary.id)
-                        .map { AiChatMessage(it.role, it.content) }
-                    runCatching {
-                        CyanBridgeServices.chatAiService.chat(history).message
-                    }.onSuccess { response ->
-                        CyanBridgeServices.chatRepository.insertMessage(
-                            ChatMessageEntity(
-                                id = "assistant-${sharedNowMillis()}",
-                                chatId = threadSummary.id,
-                                role = "assistant",
-                                content = response.content,
-                                timestamp = sharedNowMillis(),
-                            ),
-                        )
-                    }.onFailure { error ->
-                         statusText = error.message ?: chatRequestFailed
-                    }
-                    reloadMessages()
-                    isThinking = false
-                }
-            }
-        },
-        onAttachImage = {},
-        onRecordAudio = {},
-        onClearAttachments = {},
-        onDestinationSelected = { destination ->
-            if (destination == AppDestination.CHATS) onBack() else onDestinationSelected(destination)
-        },
-        showNavigationBar = false,
-    )
-}
-
-@OptIn(ExperimentalResourceApi::class)
-@Composable
 private fun SharedMediaDestination(onDestinationSelected: (AppDestination) -> Unit) {
     val scope = rememberCoroutineScope()
     val formatTimestamp = sharedTimestampFormatter()
@@ -558,7 +355,7 @@ private class SharedSettingsScreenActions(
     override fun openLocalModels() = Unit
 }
 
-private const val SHARED_SETTINGS_PREFS = "cyanbridge_shared_settings"
+internal const val SHARED_SETTINGS_PREFS = "cyanbridge_shared_settings"
 
 private fun loadSharedSettings(preferences: PlatformPreferences): SettingsUiState = SettingsUiState(
     providerType = AgentProviderType.valueOf(preferences.getString("provider_type", AgentProviderType.PRO_SUBSCRIPTION.name)),
@@ -571,7 +368,14 @@ private fun loadSharedSettings(preferences: PlatformPreferences): SettingsUiStat
     transcriptStorageEnabled = preferences.getBoolean("transcript_storage", true),
     redactNamesEnabled = preferences.getBoolean("redact_names", true),
     includeFullTranscriptionInExports = preferences.getBoolean("full_transcript_exports", false),
+    defaultImageQuestion = preferences.getString("default_image_question", SettingsUiState().defaultImageQuestion),
 )
+
+/** The image-question prompt from Settings, shared by chat attachments and glasses image questions. */
+internal fun sharedDefaultImageQuestion(): String =
+    createPlatformPreferences(SHARED_SETTINGS_PREFS)
+        .getString("default_image_question", "")
+        .ifBlank { SettingsUiState().defaultImageQuestion }
 
 private fun saveSharedSettings(preferences: PlatformPreferences, state: SettingsUiState) {
     preferences.putString("provider_type", state.providerType.name)
@@ -584,9 +388,10 @@ private fun saveSharedSettings(preferences: PlatformPreferences, state: Settings
     preferences.putBoolean("transcript_storage", state.transcriptStorageEnabled)
     preferences.putBoolean("redact_names", state.redactNamesEnabled)
     preferences.putBoolean("full_transcript_exports", state.includeFullTranscriptionInExports)
+    preferences.putString("default_image_question", state.defaultImageQuestion)
 }
 
-private fun ChatMessageEntity.toSharedMessage(): ChatMessage = ChatMessage(
+internal fun ChatMessageEntity.toSharedMessage(): ChatMessage = ChatMessage(
     id = id,
     chatId = chatId,
     role = if (role.equals("user", ignoreCase = true)) ChatRole.USER else ChatRole.ASSISTANT,
@@ -596,7 +401,7 @@ private fun ChatMessageEntity.toSharedMessage(): ChatMessage = ChatMessage(
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
-private fun sharedTimestampFormatter(): (Long) -> String {
+internal fun sharedTimestampFormatter(): (Long) -> String {
     val unknown = stringResource(Res.string.time_unknown)
     val justNow = stringResource(Res.string.time_just_now)
     val minutesAgo = stringResource(Res.string.time_minutes_ago)
@@ -625,4 +430,4 @@ private fun formatSharedTimestamp(
     }
 }
 
-private fun sharedNowMillis(): Long = platformCurrentTimeMillis()
+internal fun sharedNowMillis(): Long = platformCurrentTimeMillis()
