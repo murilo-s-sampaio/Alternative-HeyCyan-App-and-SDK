@@ -3,8 +3,10 @@ package com.fersaiyan.cyanbridge.shared.platform
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.fersaiyan.cyanbridge.localmodels.catalog.LocalModelCatalogEntry
 import com.fersaiyan.cyanbridge.shared.ai.ChatMessage
 import com.fersaiyan.cyanbridge.shared.localmodels.InstalledModelUiItem
+import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelCatalogSearchUiState
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelCatalogUiItem
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelDownloadUiState
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelGenerationUiState
@@ -32,14 +34,15 @@ import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSize
 import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSNumber
-import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSURLSession
 import platform.Foundation.NSURLSessionDownloadTask
+import platform.Foundation.NSMutableURLRequest
+import platform.Foundation.setValue
 import platform.Foundation.NSUserDomainMask
-import platform.Foundation.downloadTaskWithURL
+import platform.Foundation.downloadTaskWithRequest
 import platform.UIKit.UIAlertAction
 import platform.UIKit.UIAlertActionStyleCancel
 import platform.UIKit.UIAlertActionStyleDestructive
@@ -59,41 +62,15 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 object IosLocalModels {
-    private class CatalogModel(
-        val id: String,
-        val title: String,
-        val details: String,
-        val url: String,
-        val fileName: String,
-    )
-
-    private val catalog = listOf(
-        CatalogModel(
-            id = "smollm2-135m-q8",
-            title = "SmolLM2 135M Instruct · llama.cpp",
-            details = "145 MB GGUF. The smallest test model: fast everywhere, English only, weak answers.",
-            url = "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf",
-            fileName = "SmolLM2-135M-Instruct-Q8_0.gguf",
-        ),
-        CatalogModel(
-            id = "qwen25-05b-q4",
-            title = "Qwen2.5 0.5B Instruct · llama.cpp",
-            details = "491 MB GGUF (Q4_K_M). Small multilingual chat model; understands Portuguese.",
-            url = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            fileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        ),
-        CatalogModel(
-            id = "qwen3-06b-litert",
-            title = "Qwen3 0.6B · LiteRT-LM",
-            details = "497 MB .litertlm (int4). Tests Google's LiteRT-LM runtime. May print its reasoning first.",
-            url = "https://huggingface.co/litert-community/Qwen3-0.6B/resolve/main/qwen3_0_6b_mixed_int4.litertlm",
-            fileName = "qwen3_0_6b_mixed_int4.litertlm",
-        ),
-    )
+    /** Online search results by catalog id, so Download / Info can find them. */
+    private val searchResults = mutableMapOf<String, LocalModelCatalogEntry>()
+    private var searchJob: Job? = null
+    private var downloadingId: String? = null
 
     private const val KEY_SELECTED = "selected_model"
     private const val KEY_USE_GPU = "use_gpu"
     private const val KEY_SYSTEM_PROMPT = "system_prompt"
+    private const val KEYCHAIN_HF_TOKEN = "hugging_face_token"
     private const val CONTEXT_TOKENS = 2048
     private const val REPLY_TOKENS = 512
     private const val DEFAULT_SYSTEM_PROMPT =
@@ -152,6 +129,18 @@ object IosLocalModels {
 
     private val systemPrompt: String
         get() = preferences.getString(KEY_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT)
+
+    private val huggingFaceToken: String
+        get() = IosSecurityRegistry.bridge?.keychainGet(KEYCHAIN_HF_TOKEN)?.toKotlinBytes()?.decodeToString().orEmpty()
+
+    private fun saveHuggingFaceToken(value: String) {
+        val bridge = IosSecurityRegistry.bridge ?: return
+        if (value.isBlank()) bridge.keychainDelete(KEYCHAIN_HF_TOKEN)
+        else bridge.keychainSet(KEYCHAIN_HF_TOKEN, value.trim().encodeToByteArray().toNSData())
+    }
+
+    private fun findEntry(id: String): LocalModelCatalogEntry? =
+        IosModelCatalog.curated.firstOrNull { it.id == id } ?: searchResults[id]
 
     /** True when chats should run on the selected on-device model. */
     val isActive: Boolean get() = bridge != null && selectedName != null
@@ -215,6 +204,43 @@ object IosLocalModels {
         isOpen = true
     }
 
+    /** Filters the curated list as the user types and searches Hugging Face after a short pause. */
+    fun onCatalogSearchQueryChange(query: String) {
+        searchJob?.cancel()
+        val trimmed = query.trim()
+        uiState = uiState.copy(
+            catalogExpanded = true,
+            catalogSearch = LocalModelCatalogSearchUiState(
+                query = query,
+                isSearching = trimmed.length >= 2,
+                status = if (trimmed.isNotEmpty() && trimmed.length < 2) "Type at least 2 letters to search Hugging Face." else "",
+            ),
+        )
+        refreshUi()
+        if (trimmed.length < 2) return
+        searchJob = scope.launch {
+            delay(600)
+            val found = runCatching { IosHuggingFaceSearch.search(trimmed, huggingFaceToken) }
+            found.getOrNull()?.forEach { searchResults[it.id] = it }
+            // Models this iPhone can run first, then by Hugging Face popularity (the API order).
+            val results = found.getOrNull().orEmpty().sortedBy { !IosDeviceCapability.assess(it).supported }
+            PlatformLogger.i(
+                TAG,
+                "Search \"$trimmed\": ${found.exceptionOrNull()?.message ?: results.joinToString { "${it.displayName} ${formatSize(it.sizeBytes)}" }}",
+            )
+            if (uiState.catalogSearch?.query?.trim() != trimmed) return@launch
+            uiState = uiState.copy(
+                catalogSearch = LocalModelCatalogSearchUiState(
+                    query = uiState.catalogSearch?.query ?: query,
+                    status = found.exceptionOrNull()?.let { "Search failed: ${it.message}" }
+                        ?: if (results.isEmpty()) "No GGUF or LiteRT-LM model found for \"$trimmed\"." else
+                            "${results.size} models. Each uses its recommended file (Q4_K_M when available).",
+                    results = results.map(::catalogItem),
+                ),
+            )
+        }
+    }
+
     fun handle(action: LocalModelsAction) {
         when (action) {
             LocalModelsAction.Back, LocalModelsAction.DiscardChangesAndBack -> isOpen = false
@@ -228,9 +254,7 @@ object IosLocalModels {
             LocalModelsAction.UnloadSelectedModel -> unload("Model unloaded. It loads again on the next question.")
             LocalModelsAction.RemoveSelectedModel -> selectedName?.let(::confirmDelete)
             is LocalModelsAction.DownloadCatalogModel -> download(action.id)
-            is LocalModelsAction.ShowCatalogModelInfo -> catalog.firstOrNull { it.id == action.id }?.let {
-                IosMediaPlatform.showCopyAlert(it.title, "${it.details}\n\n${it.url}", "Copy link", it.url)
-            }
+            is LocalModelsAction.ShowCatalogModelInfo -> findEntry(action.id)?.let(::showCatalogInfo)
             LocalModelsAction.CancelDownload -> downloadTask?.cancel()
             LocalModelsAction.RunWarmup -> runWarmup()
             LocalModelsAction.SaveGenerationSettings -> {
@@ -251,6 +275,10 @@ object IosLocalModels {
                     generation = uiState.generation.copy(systemPrompt = action.value),
                     hasUnsavedChanges = true,
                 )
+                LocalModelTextField.HUGGING_FACE_TOKEN -> {
+                    saveHuggingFaceToken(action.value)
+                    uiState = uiState.copy(generation = uiState.generation.copy(huggingFaceToken = action.value))
+                }
                 LocalModelTextField.REMOTE_BASE_URL -> editRemote { it.copy(baseUrl = action.value) }
                 LocalModelTextField.REMOTE_MODEL_NAME -> editRemote { it.copy(modelName = action.value) }
                 LocalModelTextField.REMOTE_API_KEY -> editRemote { it.copy(apiKey = action.value) }
@@ -290,6 +318,10 @@ object IosLocalModels {
                 download = current.download,
                 hasUnsavedChanges = current.hasUnsavedChanges,
                 warmupResult = warmup ?: current.warmupResult,
+                catalogSearch = current.catalogSearch?.let { search ->
+                    search.copy(results = search.results.mapNotNull { searchResults[it.id] }.map(::catalogItem))
+                },
+                catalog = filteredCatalog(current.catalogSearch?.query.orEmpty()),
                 generation = current.generation.copy(
                     computeBackendOptions = backendOptions(),
                     computeBackendIndex = if (useGpu) 0 else backendOptions().lastIndex,
@@ -309,12 +341,12 @@ object IosLocalModels {
     private fun buildState(remote: RemoteInferenceUiState): LocalModelsConfigureUiState {
         val files = installedFiles()
         val selected = selectedName
-        val ramGb = NSProcessInfo.processInfo.physicalMemory.toDouble() / (1024.0 * 1024 * 1024)
         val loaded = selected != null && loadedPath == pathOf(selected)
         return LocalModelsConfigureUiState(
             engineStatus = if (bridge != null) "Runtimes: llama.cpp (.gguf) + LiteRT-LM (.litertlm)"
             else "On-device runtimes are not available in this build",
-            deviceSummary = "${UIDevice.currentDevice.model} · ${(ramGb * 10).toInt() / 10.0} GB RAM",
+            deviceSummary = "${UIDevice.currentDevice.model} · ${IosDeviceCapability.format(IosDeviceCapability.ramGb, 0)} GB RAM" +
+                if (IosDeviceCapability.isSimulator) " (simulated Pro Max)" else "",
             selectedModelStatus = when {
                 selected == null -> "Status: no model selected — chats use the relay or remote server."
                 IosRemoteModelSettings.isActive -> "Status: $selected is selected, but the remote server is on and takes priority."
@@ -324,17 +356,8 @@ object IosLocalModels {
             emptyStateMessage = "No model yet. Download a test model below or import a .gguf / .litertlm file from Files.",
             installedModels = files.map { InstalledModelUiItem(it, "$it (${formatSize(sizeOf(it))})") },
             selectedInstalledModelId = selected,
-            catalog = catalog.map { model ->
-                val installed = model.fileName in files
-                LocalModelCatalogUiItem(
-                    id = model.id,
-                    title = model.title,
-                    details = model.details,
-                    status = if (installed) "Installed" else "Not downloaded",
-                    downloadLabel = if (installed) "Installed" else "Download",
-                    canDownload = !installed && downloadTask == null,
-                )
-            },
+            catalog = filteredCatalog(""),
+            catalogSearch = LocalModelCatalogSearchUiState(),
             catalogExpanded = files.isEmpty(),
             remoteServerExpanded = remote.enabled,
             generation = LocalModelGenerationUiState(
@@ -342,13 +365,60 @@ object IosLocalModels {
                 computeBackendIndex = if (useGpu) 0 else backendOptions().lastIndex,
                 computeBackendNote = backendNote(),
                 systemPrompt = systemPrompt,
+                huggingFaceToken = huggingFaceToken,
             ),
             remoteServer = remote,
         )
     }
 
+    private fun filteredCatalog(query: String): List<LocalModelCatalogUiItem> =
+        IosModelCatalog.curated.filter { query.isBlank() || IosModelCatalog.matches(it, query) }.map(::catalogItem)
+
+    /** Mirrors Android's catalog rows: quantization • size • description, and the device check as status. */
+    private fun catalogItem(entry: LocalModelCatalogEntry): LocalModelCatalogUiItem {
+        val installed = entry.expectedFilename in installedFiles()
+        val assessment = IosDeviceCapability.assess(entry)
+        val runtime = if (entry.format == "litertlm") "LiteRT-LM" else "llama.cpp"
+        return LocalModelCatalogUiItem(
+            id = entry.id,
+            title = entry.displayName,
+            details = "${entry.quantization} • ${formatSize(entry.sizeBytes)} • $runtime • ${entry.shortDescription}",
+            status = when {
+                installed -> "Ready"
+                !assessment.supported -> assessment.blockers.joinToString(" ")
+                entry.gatedDownload && huggingFaceToken.isBlank() ->
+                    "Gated: accept the license on Hugging Face and add a token below."
+                else -> assessment.warnings.joinToString(" ").ifBlank { "Compatible with this device" }
+            },
+            downloadLabel = when {
+                downloadingId == entry.id -> "Downloading…"
+                installed -> "Installed"
+                !assessment.supported -> "Download anyway"
+                else -> "Download"
+            },
+            canDownload = !installed && downloadTask == null && entry.sourceUrl != null,
+        )
+    }
+
+    private fun showCatalogInfo(entry: LocalModelCatalogEntry) {
+        val assessment = IosDeviceCapability.assess(entry)
+        val message = buildString {
+            appendLine(entry.shortDescription)
+            appendLine()
+            appendLine("File: ${entry.expectedFilename}")
+            appendLine("Size: ${formatSize(entry.sizeBytes)} · ${entry.quantization}")
+            appendLine("Needs: ${IosDeviceCapability.format(entry.minRamGb, 1)} GB RAM · this iPhone: ${IosDeviceCapability.format(IosDeviceCapability.ramGb, 1)} GB")
+            assessment.blockers.forEach { appendLine("⚠️ $it") }
+            assessment.warnings.forEach { appendLine("• $it") }
+            appendLine(entry.licenseTermsNote)
+            append(entry.sourcePageUrl ?: entry.sourceUrl.orEmpty())
+        }
+        val link = entry.sourcePageUrl ?: entry.sourceUrl.orEmpty()
+        IosMediaPlatform.showCopyAlert(entry.displayName, message, "Copy link", link)
+    }
+
     private fun formatSize(bytes: Long): String =
-        if (bytes >= 1_000_000_000) "${(bytes / 100_000_000) / 10.0} GB" else "${bytes / 1_000_000} MB"
+        if (bytes >= 1_000_000_000) "${IosDeviceCapability.format(bytes / 1_000_000_000.0, 2)} GB" else "${bytes / 1_000_000} MB"
 
     // ── Actions ──
 
@@ -406,34 +476,69 @@ object IosLocalModels {
         scope.launch { uiState = uiState.copy(download = state) }
     }
 
+    /** Same gate as Android's requestDownload: blockers and warnings are shown before starting. */
     private fun download(id: String) {
-        val model = catalog.firstOrNull { it.id == id } ?: return
+        val entry = findEntry(id) ?: return
         if (downloadTask != null) return
-        val url = NSURL.URLWithString(model.url) ?: return
-        val destination = pathOf(model.fileName)
-        setDownload(LocalModelDownloadUiState(isInFlight = true, message = "Downloading ${model.title}…", progressPercent = 0))
-        val task = NSURLSession.sharedSession.downloadTaskWithURL(url) { location, response, error ->
+        val token = huggingFaceToken
+        if (entry.gatedDownload && token.isBlank()) {
+            refreshUi("${entry.displayName} is gated: accept its license on Hugging Face, then add your token in Curated models.")
+            return
+        }
+        val assessment = IosDeviceCapability.assess(entry)
+        val problems = assessment.blockers + assessment.warnings
+        if (problems.isEmpty()) {
+            startDownload(entry, token)
+            return
+        }
+        scope.launch {
+            val proceed = IosMediaPlatform.confirm(
+                title = "Device warning",
+                message = problems.joinToString("\n\n") +
+                    if (!assessment.supported) "\n\niOS may close CyanBridge while loading this model." else "",
+                confirmTitle = if (assessment.supported) "Continue" else "Download anyway",
+                cancelTitle = "Cancel",
+            )
+            if (proceed) startDownload(entry, token)
+        }
+    }
+
+    private fun startDownload(entry: LocalModelCatalogEntry, token: String) {
+        val url = entry.sourceUrl?.let { NSURL.URLWithString(it) } ?: return
+        val destination = pathOf(entry.expectedFilename)
+        val request = NSMutableURLRequest(uRL = url)
+        if (token.isNotBlank() && url.host?.endsWith("huggingface.co") == true) {
+            request.setValue("Bearer ${token.trim()}", forHTTPHeaderField = "Authorization")
+        }
+        setDownload(LocalModelDownloadUiState(isInFlight = true, message = "Downloading ${entry.displayName}…", progressPercent = 0))
+        val task = NSURLSession.sharedSession.downloadTaskWithRequest(request) { location, response, error ->
             // The temporary file disappears when this handler returns, so move it here.
             val status = (response as? NSHTTPURLResponse)?.statusCode?.toInt() ?: 0
+            val installed: Boolean
             val message = when {
-                error != null -> "Download stopped: ${error.localizedDescription}"
-                location == null || status !in 200..299 -> "Download failed (HTTP $status)."
+                error != null -> "Download stopped: ${error.localizedDescription}".also { installed = false }
+                location == null || status !in 200..299 -> (
+                    if (status == 401 || status == 403) "Download refused (HTTP $status). Accept the license and check the token."
+                    else "Download failed (HTTP $status)."
+                    ).also { installed = false }
                 else -> {
                     NSFileManager.defaultManager.removeItemAtPath(destination, null)
-                    val moved = NSFileManager.defaultManager.moveItemAtURL(location, NSURL.fileURLWithPath(destination), null)
-                    if (moved) "${model.title} installed." else "Could not save the model file."
+                    installed = NSFileManager.defaultManager.moveItemAtURL(location, NSURL.fileURLWithPath(destination), null)
+                    if (installed) "${entry.displayName} installed." else "Could not save the model file."
                 }
             }
             scope.launch {
                 downloadJob?.cancel()
                 downloadTask = null
+                downloadingId = null
                 PlatformLogger.i(TAG, message)
-                if (message.endsWith("installed.") && selectedName == null) preferences.putString(KEY_SELECTED, model.fileName)
+                if (installed && selectedName == null) preferences.putString(KEY_SELECTED, entry.expectedFilename)
                 uiState = uiState.copy(download = LocalModelDownloadUiState(message = message))
                 refreshUi()
             }
         }
         downloadTask = task
+        downloadingId = entry.id
         task.resume()
         refreshUi()
         downloadJob = scope.launch {
@@ -445,7 +550,7 @@ object IosLocalModels {
                 uiState = uiState.copy(
                     download = LocalModelDownloadUiState(
                         isInFlight = true,
-                        message = "Downloading ${model.title}: ${formatSize(received)}" +
+                        message = "Downloading ${entry.displayName}: ${formatSize(received)}" +
                             if (expected > 0) " of ${formatSize(expected)}" else "",
                         progressPercent = percent,
                     ),

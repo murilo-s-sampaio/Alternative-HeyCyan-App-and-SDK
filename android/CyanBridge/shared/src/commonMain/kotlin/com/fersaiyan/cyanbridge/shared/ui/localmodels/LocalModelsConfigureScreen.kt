@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -65,6 +66,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelCatalogUiItem
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelDownloadUiState
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelOptionField
 import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsPlatformFeatures
@@ -80,6 +82,8 @@ fun LocalModelsConfigureScreen(
     state: LocalModelsConfigureUiState,
     onAction: (LocalModelsAction) -> Unit,
     features: LocalModelsPlatformFeatures = LocalModelsPlatformFeatures(),
+    // Called as the user types in the catalog search field (shown when state.catalogSearch is set).
+    onCatalogSearchQueryChange: (String) -> Unit = {},
 ) {
     var showUnsavedChangesDialog by rememberSaveable { mutableStateOf(false) }
     val requestBack = {
@@ -229,20 +233,30 @@ fun LocalModelsConfigureScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    val search = state.catalogSearch
+                    if (search != null) {
+                        OutlinedTextField(
+                            value = search.query,
+                            onValueChange = onCatalogSearchQueryChange,
+                            label = { Text("Search models by name") },
+                            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("local_models_search"),
+                        )
+                    }
                     state.catalog.forEachIndexed { index, model ->
                         if (index > 0) HorizontalDivider()
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(model.title, style = MaterialTheme.typography.titleSmall)
-                            SupportingText(model.details)
-                            SupportingText(model.status)
-                            ActionRow(
-                                primaryLabel = model.downloadLabel,
-                                onPrimary = { onAction(LocalModelsAction.DownloadCatalogModel(model.id)) },
-                                secondaryLabel = "Info",
-                                onSecondary = { onAction(LocalModelsAction.ShowCatalogModelInfo(model.id)) },
-                                enabled = model.canDownload,
-                                secondaryEnabled = true,
-                            )
+                        CatalogModelRow(model, onAction)
+                    }
+                    if (search != null && search.query.isNotBlank()) {
+                        if (state.catalog.isEmpty()) SupportingText("No curated model matches \"${search.query.trim()}\".")
+                        HorizontalDivider()
+                        Text("More on Hugging Face", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        if (search.isSearching) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        if (search.status.isNotBlank()) SupportingText(search.status)
+                        search.results.forEachIndexed { index, model ->
+                            if (index > 0) HorizontalDivider()
+                            CatalogModelRow(model, onAction)
                         }
                     }
                     ModelTextField(
@@ -623,6 +637,23 @@ private fun ActionRow(
 private fun SupportingText(text: String) {
     if (text.isBlank()) return
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun CatalogModelRow(model: LocalModelCatalogUiItem, onAction: (LocalModelsAction) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(model.title, style = MaterialTheme.typography.titleSmall)
+        SupportingText(model.details)
+        SupportingText(model.status)
+        ActionRow(
+            primaryLabel = model.downloadLabel,
+            onPrimary = { onAction(LocalModelsAction.DownloadCatalogModel(model.id)) },
+            secondaryLabel = "Info",
+            onSecondary = { onAction(LocalModelsAction.ShowCatalogModelInfo(model.id)) },
+            enabled = model.canDownload,
+            secondaryEnabled = true,
+        )
+    }
 }
 
 @Composable

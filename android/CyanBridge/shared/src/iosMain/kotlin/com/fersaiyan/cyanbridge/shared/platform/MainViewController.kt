@@ -160,9 +160,17 @@ fun MainViewControllerForDestination(destination: String) = ComposeUIViewControl
         controller.initializeServices()
     }
     val dashboardState by controller.dashboardState.collectAsState()
+    // "local-models" or "local-models:<search>" opens Settings ▸ Local for screenshots.
+    remember(destination) {
+        if (destination.startsWith("local-models")) {
+            IosLocalModels.open()
+            destination.substringAfter(':', "").takeIf { it.isNotBlank() }?.let(IosLocalModels::onCatalogSearchQueryChange)
+        }
+    }
     IosCyanBridgeApp(
         controller = controller,
-        initialDestination = when (destination) {
+        initialDestination = when (destination.substringBefore(':')) {
+            "local-models" -> AppDestination.SETTINGS
             "chats" -> AppDestination.CHATS
             "media" -> AppDestination.MEDIA
             "plugins" -> AppDestination.PLUGINS
@@ -248,6 +256,7 @@ private fun IosCyanBridgeApp(
                     state = IosLocalModels.uiState,
                     onAction = IosLocalModels::handle,
                     features = LocalModelsPlatformFeatures(studioBridge = false, advancedOptions = false, mtp = false),
+                    onCatalogSearchQueryChange = IosLocalModels::onCatalogSearchQueryChange,
                 )
             }
         }
