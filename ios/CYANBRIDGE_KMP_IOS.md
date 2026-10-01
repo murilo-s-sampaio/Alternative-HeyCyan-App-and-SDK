@@ -46,9 +46,19 @@ HeyCyan glasses are driven through QCSDK, the iOS counterpart of Android's `glas
 - `IosBleManager` still owns scanning and connecting. When the selected class is HeyCyan, it hands the connected `CBPeripheral` to `QCSDKManager` instead of running generic service discovery, and falls back to the generic path if QCSDK rejects it.
 - Simulator builds have no bridge; the dashboard reports that vendor controls need a device build.
 
+## On-device models
+
+The "Local" AI provider runs models on the iPhone through `ios/LocalModels`, a local Swift package linked into `CyanBridgeKMPHost`:
+
+- **llama.cpp** for `.gguf` files. `Frameworks/llama.xcframework` is not committed: build it once with `ios/scripts/build_llama_xcframework.sh` (needs `cmake`). The official release zip has no iOS-simulator slice, so the script builds from source.
+- **LiteRT-LM** for `.litertlm` files: Google's prebuilt `CLiteRTLM.xcframework` (downloaded by SwiftPM with a pinned checksum) plus its Apache-2.0 Swift wrapper copied into `Sources/LiteRTLM`. Depending on the LiteRT-LM repository directly makes SwiftPM clone several GB of history.
+- `LocalModelBridgeImpl.swift` implements the shared `LocalModelBridge`; `IosLocalModels.kt` owns storage (Application Support, excluded from backup), the test-model catalog, import from Files and the Settings ▸ Local screen.
+- Routing: remote OpenAI-compatible server (when enabled) → selected on-device model → CyanBridge relay. On-device image questions are not supported yet.
+- Self-test: launch with `CYANBRIDGE_LOCAL_MODEL_SELFTEST=1` (or a model file name) to load the model, ask one question and write the reply to `Documents/cyanbridge-debug.log`.
+
 ## Mac Setup
 
-1. Install Xcode and a Java 17+ JDK. Android Studio's bundled JBR is suitable.
+1. Install Xcode and a Java 17+ JDK. Android Studio's bundled JBR is suitable. Run `ios/scripts/build_llama_xcframework.sh` once (see On-device models).
 2. From `android/CyanBridge`, run the framework task once for the appropriate simulator or device destination:
 
 ```bash

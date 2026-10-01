@@ -91,7 +91,7 @@ class IosSettingsPlatform(
 
     override fun appLanguageLabel(): String = IosAppLanguage.selectedLabel
 
-    override fun openLocalModels() = IosRemoteModelSettings.open()
+    override fun openLocalModels() = IosLocalModels.open()
 
     override fun exportLocalData() {
         scope.launch {

@@ -6,6 +6,10 @@ struct CyanBridgeKMPHostApp: App {
     init() {
         VendorGlassesSetup.register()
         IosSecurityBridgeImpl.register()
+        LocalModelBridgeImpl.register()
+        if let selfTest = ProcessInfo.processInfo.environment["CYANBRIDGE_LOCAL_MODEL_SELFTEST"], !selfTest.isEmpty {
+            IosLocalModels.shared.runSelfTest(modelName: selfTest)
+        }
     }
 
     var body: some Scene {

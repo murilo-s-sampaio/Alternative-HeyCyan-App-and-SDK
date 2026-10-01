@@ -21,6 +21,13 @@ data class LocalModelsConfigureUiState(
     val studioBridge: StudioBridgeUiState = StudioBridgeUiState(),
 )
 
+/** Optional parts of the local-models screen; iOS has no Studio bridge, MTP or advanced runtime knobs. */
+data class LocalModelsPlatformFeatures(
+    val studioBridge: Boolean = true,
+    val advancedOptions: Boolean = true,
+    val mtp: Boolean = true,
+)
+
 data class InstalledModelUiItem(
     val id: String,
     val label: String,

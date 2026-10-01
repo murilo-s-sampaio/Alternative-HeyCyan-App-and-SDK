@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CB2000152F00000100CB0001 /* LocalModelBridgeImpl.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2000162F00000100CB0001 /* LocalModelBridgeImpl.swift */; };
+		CB2000192F00000100CB0001 /* CyanLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = CB2000182F00000100CB0001 /* CyanLocalModels */; };
 		760D69932E9EE75A00FFE27F /* WiFiTransferManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 760D69922E9EE75A00FFE27F /* WiFiTransferManager.h */; };
 		760D69952E9EE76400FFE27F /* GlassesFrameworkTypes.h in Headers */ = {isa = PBXBuildFile; fileRef = 760D69942E9EE76400FFE27F /* GlassesFrameworkTypes.h */; };
 		760D69972E9EE77000FFE27F /* WiFiTransferManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 760D69962E9EE77000FFE27F /* WiFiTransferManager.m */; };
@@ -44,6 +46,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CB2000162F00000100CB0001 /* LocalModelBridgeImpl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelBridgeImpl.swift; sourceTree = "<group>"; };
 		760D69922E9EE75A00FFE27F /* WiFiTransferManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WiFiTransferManager.h; sourceTree = "<group>"; };
 		760D69942E9EE76400FFE27F /* GlassesFrameworkTypes.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GlassesFrameworkTypes.h; sourceTree = "<group>"; };
 		760D69962E9EE77000FFE27F /* WiFiTransferManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WiFiTransferManager.m; sourceTree = "<group>"; };
@@ -118,6 +121,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CB2000192F00000100CB0001 /* CyanLocalModels in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -210,6 +214,7 @@
 				CB2000022F00000100CB0001 /* CyanBridgeKMPHostApp.swift */,
 				CB2000122F00000100CB0001 /* QCSDKGlassesBridge.swift */,
 				CB2000142F00000100CB0001 /* IosSecurityBridgeImpl.swift */,
+				CB2000162F00000100CB0001 /* LocalModelBridgeImpl.swift */,
 				CB20000D2F00000100CB0001 /* CyanBridgeKMPHost.entitlements */,
 			);
 			path = CyanBridgeKMPHost;
@@ -276,6 +281,9 @@
 			dependencies = (
 			);
 			name = CyanBridgeKMPHost;
+			packageProductDependencies = (
+				CB2000182F00000100CB0001 /* CyanLocalModels */,
+			);
 			productName = CyanBridgeKMPHost;
 			productReference = CB2000032F00000100CB0001 /* CyanBridgeKMPHost.app */;
 			productType = "com.apple.product-type.application";
@@ -329,6 +337,9 @@
 			);
 			mainGroup = AA13134E2E2F903500B03938;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				CB2000172F00000100CB0001 /* XCLocalSwiftPackageReference "LocalModels" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA1313582E2F903500B03938 /* Products */;
 			projectDirPath = "";
@@ -432,6 +443,7 @@
 				CB2000012F00000100CB0001 /* CyanBridgeKMPHostApp.swift in Sources */,
 				CB2000112F00000100CB0001 /* QCSDKGlassesBridge.swift in Sources */,
 				CB2000132F00000100CB0001 /* IosSecurityBridgeImpl.swift in Sources */,
+				CB2000152F00000100CB0001 /* LocalModelBridgeImpl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -830,7 +842,7 @@
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CyanBridge uses Bluetooth to find and communicate with your glasses.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CyanBridge connects to your glasses over their local Wi-Fi transfer network.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Location access lets CyanBridge verify the glasses Wi-Fi connection.";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -884,7 +896,7 @@
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CyanBridge uses Bluetooth to find and communicate with your glasses.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CyanBridge connects to your glasses over their local Wi-Fi transfer network.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Location access lets CyanBridge verify the glasses Wi-Fi connection.";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -937,7 +949,7 @@
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CyanBridge uses Bluetooth to find and communicate with your glasses.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CyanBridge connects to your glasses over their local Wi-Fi transfer network.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Location access lets CyanBridge verify the glasses Wi-Fi connection.";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -983,7 +995,7 @@
 					"$(SRCROOT)/../android/CyanBridge/shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1014,7 +1026,7 @@
 					"$(SRCROOT)/../android/CyanBridge/shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1044,7 +1056,7 @@
 					"$(SRCROOT)/../android/CyanBridge/shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1108,6 +1120,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		CB2000172F00000100CB0001 /* XCLocalSwiftPackageReference "LocalModels" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LocalModels;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CB2000182F00000100CB0001 /* CyanLocalModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CyanLocalModels;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AA13134F2E2F903500B03938 /* Project object */;
 }

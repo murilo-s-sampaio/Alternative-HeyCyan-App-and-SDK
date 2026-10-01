@@ -72,6 +72,7 @@ import com.fersaiyan.cyanbridge.shared.ui.sharedDefaultImageQuestion
 import com.fersaiyan.cyanbridge.shared.persistence.ChatEntity
 import com.fersaiyan.cyanbridge.shared.persistence.ChatMessageEntity
 import com.fersaiyan.cyanbridge.shared.ui.DeviceBindScreen
+import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsPlatformFeatures
 import com.fersaiyan.cyanbridge.shared.ui.localmodels.LocalModelsConfigureScreen
 import com.fersaiyan.cyanbridge.shared.ui.onboarding.WelcomeScreen
 import com.fersaiyan.cyanbridge.shared.ui.theme.CyanBridgeMaterialTheme
@@ -242,11 +243,11 @@ private fun IosCyanBridgeApp(
                     onBack = { controller.closeDeviceBind() },
                 )
             }
-            if (IosRemoteModelSettings.isOpen) {
+            if (IosLocalModels.isOpen) {
                 LocalModelsConfigureScreen(
-                    state = IosRemoteModelSettings.uiState,
-                    onAction = IosRemoteModelSettings::handle,
-                    remoteServerOnly = true,
+                    state = IosLocalModels.uiState,
+                    onAction = IosLocalModels::handle,
+                    features = LocalModelsPlatformFeatures(studioBridge = false, advancedOptions = false, mtp = false),
                 )
             }
         }

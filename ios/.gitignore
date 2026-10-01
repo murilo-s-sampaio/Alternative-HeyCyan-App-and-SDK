@@ -1,0 +1,5 @@
+
+# Built by ios/scripts/build_llama_xcframework.sh
+LocalModels/Frameworks/
+LocalModels/.build/
+LocalModels/.swiftpm/

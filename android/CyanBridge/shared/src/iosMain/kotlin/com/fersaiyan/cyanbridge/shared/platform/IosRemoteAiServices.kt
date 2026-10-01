@@ -1,24 +1,12 @@
 package com.fersaiyan.cyanbridge.shared.platform
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import com.fersaiyan.cyanbridge.shared.ai.ChatAiService
 import com.fersaiyan.cyanbridge.shared.ai.ChatMessage
 import com.fersaiyan.cyanbridge.shared.ai.ChatResponse
 import com.fersaiyan.cyanbridge.shared.ai.ImageAiService
 import com.fersaiyan.cyanbridge.shared.ai.VoiceAiService
-import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelTextField
-import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelToggleField
-import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsAction
-import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsConfigureUiState
-import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsSection
 import com.fersaiyan.cyanbridge.shared.localmodels.RemoteInferenceUiState
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -47,10 +35,10 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * The "Local" AI provider on iOS (Android: LocalModelsConfigureActivity's remote
- * server card + RemoteOpenAiPrefs). On-device runtimes are Android-only, so iOS
- * points chat, image questions and plugins at an OpenAI-compatible server
- * (Ollama, LM Studio, llama.cpp, vLLM, OpenRouter...). The API key lives in the Keychain.
+ * Remote OpenAI-compatible server behind the "Local" AI provider (Android:
+ * RemoteOpenAiPrefs): Ollama, LM Studio, llama.cpp server, vLLM, OpenRouter...
+ * The API key lives in the Keychain. When enabled it takes priority over
+ * on-device models, matching Android's remote toggle.
  */
 object IosRemoteModelSettings {
     private const val KEY_ENABLED = "enabled"
@@ -59,62 +47,29 @@ object IosRemoteModelSettings {
     private const val KEYCHAIN_API_KEY = "remote_openai_api_key"
 
     private val preferences = createPlatformPreferences("cyanbridge_remote_openai")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    var isOpen by mutableStateOf(false)
-        private set
-    var uiState by mutableStateOf(LocalModelsConfigureUiState())
-        private set
-
+    val enabled: Boolean get() = preferences.getBoolean(KEY_ENABLED, false)
     val baseUrl: String get() = preferences.getString(KEY_BASE_URL, "").trim()
     val model: String get() = preferences.getString(KEY_MODEL, "").trim()
     val apiKey: String
         get() = IosSecurityRegistry.bridge?.keychainGet(KEYCHAIN_API_KEY)?.toKotlinBytes()?.decodeToString().orEmpty()
 
-    /** True when chats should go to the configured server instead of the CyanBridge relay. */
-    val isActive: Boolean
-        get() = preferences.getBoolean(KEY_ENABLED, false) && baseUrl.isNotBlank() && model.isNotBlank()
+    /** True when chats should go to the configured server. */
+    val isActive: Boolean get() = enabled && baseUrl.isNotBlank() && model.isNotBlank()
 
-    fun open() {
-        uiState = savedState(status = "")
-        isOpen = true
-    }
+    fun savedDraft(status: String = "") = RemoteInferenceUiState(
+        enabled = enabled,
+        baseUrl = baseUrl,
+        modelName = model,
+        apiKey = apiKey,
+        status = status,
+    )
 
-    fun handle(action: LocalModelsAction) {
-        when (action) {
-            LocalModelsAction.Back, LocalModelsAction.DiscardChangesAndBack -> isOpen = false
-            is LocalModelsAction.ToggleSection -> if (action.section == LocalModelsSection.REMOTE_SERVER) {
-                uiState = uiState.copy(remoteServerExpanded = !uiState.remoteServerExpanded)
-            }
-            is LocalModelsAction.UpdateText -> editRemote {
-                when (action.field) {
-                    LocalModelTextField.REMOTE_BASE_URL -> it.copy(baseUrl = action.value)
-                    LocalModelTextField.REMOTE_MODEL_NAME -> it.copy(modelName = action.value)
-                    LocalModelTextField.REMOTE_API_KEY -> it.copy(apiKey = action.value)
-                    else -> it
-                }
-            }
-            is LocalModelsAction.SetToggle -> if (action.field == LocalModelToggleField.REMOTE_SERVER_ENABLED) {
-                editRemote { it.copy(enabled = action.enabled) }
-            }
-            LocalModelsAction.TestRemoteServer -> {
-                val draft = uiState.remoteServer
-                setStatus("Testing ${draft.baseUrl.trim()}…")
-                scope.launch { setStatus(IosRemoteOpenAiClient.healthCheck(draft.baseUrl, draft.apiKey)) }
-            }
-            LocalModelsAction.SaveRemoteServer -> save()
-            else -> Unit
-        }
-    }
-
-    private fun save() {
-        val draft = uiState.remoteServer
+    /** Saves the draft and returns the status line to show. */
+    fun save(draft: RemoteInferenceUiState): String {
         val problem = IosRemoteOpenAiClient.validate(draft.baseUrl, draft.apiKey)
             ?: if (draft.enabled && draft.modelName.isBlank()) "Enter the model name (for example llama3.2)." else null
-        if (problem != null) {
-            setStatus(problem)
-            return
-        }
+        if (problem != null && (draft.enabled || draft.baseUrl.isNotBlank())) return problem
         preferences.putBoolean(KEY_ENABLED, draft.enabled)
         preferences.putString(KEY_BASE_URL, draft.baseUrl.trim())
         preferences.putString(KEY_MODEL, draft.modelName.trim())
@@ -126,38 +81,7 @@ object IosRemoteModelSettings {
             }
         }
         PlatformLogger.i(TAG, "Remote model server saved (enabled=${draft.enabled}, model=${draft.modelName.trim()})")
-        uiState = savedState(
-            status = if (draft.enabled) "Saved. Chats, image questions and plugins now use this server." else "Saved (disabled).",
-        )
-    }
-
-    private fun editRemote(change: (RemoteInferenceUiState) -> RemoteInferenceUiState) {
-        uiState = uiState.copy(remoteServer = change(uiState.remoteServer), hasUnsavedChanges = true)
-    }
-
-    private fun setStatus(status: String) {
-        uiState = uiState.copy(remoteServer = uiState.remoteServer.copy(status = status))
-    }
-
-    private fun savedState(status: String): LocalModelsConfigureUiState {
-        val active = isActive
-        return LocalModelsConfigureUiState(
-            engineStatus = if (active) "Using $model" else "Using the CyanBridge relay",
-            selectedModelStatus = if (active) {
-                "Server: $baseUrl. Voice is transcribed on this iPhone."
-            } else {
-                "On-device models are not available on iOS yet. Turn on a remote OpenAI-compatible server " +
-                    "below (Ollama, LM Studio, llama.cpp, OpenRouter...) to use your own model."
-            },
-            remoteServerExpanded = true,
-            remoteServer = RemoteInferenceUiState(
-                enabled = preferences.getBoolean(KEY_ENABLED, false),
-                baseUrl = baseUrl,
-                modelName = model,
-                apiKey = apiKey,
-                status = status,
-            ),
-        )
+        return if (draft.enabled) "Saved. Chats, image questions and plugins now use this server." else "Saved (disabled)."
     }
 
     private const val TAG = "IosRemoteModel"
@@ -329,19 +253,28 @@ internal object IosOnDeviceTranscriber {
     private const val TAG = "IosTranscriber"
 }
 
-/** Routes chat to the configured server when the custom provider is on, else to the relay. */
+/** Routing order (Android: AiProviderRouter): remote server, then on-device model, then the relay. */
 internal class IosRoutedChatAiService(private val relay: ChatAiService) : ChatAiService {
     override suspend fun chat(messages: List<ChatMessage>, model: String?): ChatResponse {
-        if (!IosRemoteModelSettings.isActive) return relay.chat(messages, model)
-        val reply = runCatching { IosRemoteOpenAiClient.chat(messages) }
-            .getOrElse { "Error: ${it.message ?: "remote server failed"}" }
+        val reply = when {
+            IosRemoteModelSettings.isActive -> runCatching { IosRemoteOpenAiClient.chat(messages) }
+                .getOrElse { "Error: ${it.message ?: "remote server failed"}" }
+            IosLocalModels.isActive -> runCatching { IosLocalModels.chat(messages) }
+                .getOrElse { "Error: ${it.message ?: "on-device model failed"}" }
+            else -> return relay.chat(messages, model)
+        }
         return ChatResponse(ChatMessage("assistant", reply))
     }
 }
 
 internal class IosRoutedImageAiService(private val relay: ImageAiService) : ImageAiService {
     override suspend fun analyzeImage(imageData: ByteArray, prompt: String, mimeType: String): String {
-        if (!IosRemoteModelSettings.isActive) return relay.analyzeImage(imageData, prompt, mimeType)
+        if (!IosRemoteModelSettings.isActive) {
+            if (IosLocalModels.isActive) {
+                return "On-device image questions are not supported yet. Use a remote vision model or the relay."
+            }
+            return relay.analyzeImage(imageData, prompt, mimeType)
+        }
         return runCatching { IosRemoteOpenAiClient.chat(listOf(ChatMessage("user", prompt)), imageData, mimeType) }
             .getOrElse { "Error: ${it.message ?: "remote server failed"}" }
     }
@@ -350,7 +283,9 @@ internal class IosRoutedImageAiService(private val relay: ImageAiService) : Imag
 /** Custom provider: transcribe on the iPhone. Relay: fall back to the iPhone when it fails. */
 internal class IosRoutedVoiceAiService(private val relay: VoiceAiService) : VoiceAiService {
     override suspend fun transcribe(audioData: ByteArray, mimeType: String): String {
-        if (IosRemoteModelSettings.isActive) return IosOnDeviceTranscriber.transcribe(audioData, mimeType)
+        if (IosRemoteModelSettings.isActive || IosLocalModels.isActive) {
+            return IosOnDeviceTranscriber.transcribe(audioData, mimeType)
+        }
         return relay.transcribe(audioData, mimeType).ifBlank { IosOnDeviceTranscriber.transcribe(audioData, mimeType) }
     }
 }
