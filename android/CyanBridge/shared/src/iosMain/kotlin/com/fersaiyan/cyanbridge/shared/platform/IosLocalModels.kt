@@ -150,11 +150,11 @@ object IosLocalModels {
     // ── Inference ──
 
     /** Describes a glasses photo with the selected model (LiteRT-LM vision models such as Gemma 4). */
-    suspend fun describeImage(image: ByteArray, prompt: String): String {
+    suspend fun describeImage(image: ByteArray, prompt: String, onToken: (String) -> Unit = {}): String {
         val path = "${NSTemporaryDirectory()}cyanbridge-image-question.jpg"
         check(IosMediaPlatform.writeFile(path, image)) { "Could not prepare the photo" }
         return try {
-            chat(listOf(ChatMessage("user", prompt)), imagePath = path)
+            chat(listOf(ChatMessage("user", prompt)), imagePath = path, onToken = onToken)
         } finally {
             NSFileManager.defaultManager.removeItemAtPath(path, null)
         }
@@ -165,6 +165,28 @@ object IosLocalModels {
         imagePath: String = "",
         onToken: (String) -> Unit = {},
     ): String = runMutex.withLock {
+        val runtime = ensureLoaded()
+        val messagesJson = buildJsonArray {
+            messages.filter { it.content.isNotBlank() }.forEach { message ->
+                addJsonObject {
+                    put("role", message.role.lowercase())
+                    put("content", message.content)
+                }
+            }
+        }.toString()
+        val reply = runtime.awaitGenerate(messagesJson, systemPrompt, REPLY_TOKENS, imagePath, onToken).getOrThrow()
+        refreshUi()
+        stripReasoning(reply).ifBlank { error("The model returned an empty reply") }
+    }
+
+    /** Loads the selected model ahead of time (while the user is still asking). */
+    suspend fun preload() {
+        if (!isActive) return
+        runCatching { runMutex.withLock { ensureLoaded() } }
+            .onFailure { PlatformLogger.w(TAG, "Preload failed: ${it.message}") }
+    }
+
+    private suspend fun ensureLoaded(): LocalModelBridge {
         val runtime = bridge ?: error("On-device runtimes are not available in this build")
         val name = selectedName ?: error("No on-device model selected")
         val path = pathOf(name)
@@ -179,17 +201,7 @@ object IosLocalModels {
             loadedOnGpu = useGpu
             PlatformLogger.i(TAG, "Loaded $name (gpu=$useGpu)")
         }
-        val messagesJson = buildJsonArray {
-            messages.filter { it.content.isNotBlank() }.forEach { message ->
-                addJsonObject {
-                    put("role", message.role.lowercase())
-                    put("content", message.content)
-                }
-            }
-        }.toString()
-        val reply = runtime.awaitGenerate(messagesJson, systemPrompt, REPLY_TOKENS, imagePath, onToken).getOrThrow()
-        refreshUi()
-        stripReasoning(reply).ifBlank { error("The model returned an empty reply") }
+        return runtime
     }
 
     /** Qwen3-style models think inside <think> tags before answering. */

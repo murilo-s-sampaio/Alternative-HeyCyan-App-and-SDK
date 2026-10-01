@@ -89,6 +89,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -120,7 +122,11 @@ private const val PREF_AI_WAKE_ROUTE = "ai_wake_word_route"
 private const val PREF_THUMBNAIL_QUALITY = "image_thumbnail_quality"
 private const val PREF_ASSISTANT_MODE = "assistant_mode"
 private const val GLASSES_CHAT_ID = "glasses-assistant"
-private const val VOICE_QUESTION_WINDOW_MS = 6_000L
+private const val VOICE_QUESTION_INITIAL_LISTENING_MS = 6_000L
+/** Android: IMAGE_QUESTION_INITIAL_LISTENING_TIMEOUT_MS and the 500 ms shutter settle delay. */
+private const val IMAGE_QUESTION_INITIAL_LISTENING_MS = 3_300L
+private const val IMAGE_QUESTION_SHUTTER_SETTLE_MS = 500L
+private const val MAX_IMAGE_FOLLOW_UPS = 3
 // Same option lists as Android's MainActivity for HeyCyan recording limits.
 private val VIDEO_DURATION_OPTIONS_SECONDS = listOf(15, 30, 60, 180, 540, 720)
 private val AUDIO_DURATION_OPTIONS_SECONDS = listOf(1_800, 3_600, 7_200)
@@ -742,7 +748,12 @@ private class IosAppController {
             }
             GlassesDashboardAction.StopMeetingCapture -> meetingRecorder.stopMeetingCapture()
             GlassesDashboardAction.TestImageQuestion -> vendorMode(VendorGlassesMode.AI_PHOTO, "Image question") {
-                updateState { it.copy(agentLastError = "Waiting for the glasses photo…") }
+                updateState { it.copy(agentLastError = "Waiting for the glasses photo… ask about it now") }
+                // Android: startParallelAudioQuestionIfEligible — listen while the photo transfers.
+                pendingImageQuestion = scope.async {
+                    delay(IMAGE_QUESTION_SHUTTER_SETTLE_MS)
+                    IosVoiceQuestion.ask(IMAGE_QUESTION_INITIAL_LISTENING_MS)
+                }
             }
             GlassesDashboardAction.TestVoiceQuestion -> scope.launch { answerVoiceQuestion() }
             is GlassesDashboardAction.SelectAssistantMode -> {
@@ -1056,50 +1067,93 @@ private class IosAppController {
 
     // ── AI questions from the glasses (Android: ImageQuestion / VoiceQuestion flows) ──
 
+    /** Question captured while the photo is still being taken (TestImageQuestion). */
+    private var pendingImageQuestion: Deferred<String?>? = null
+
+    /**
+     * Android's image-question flow: ask "Pergunte." while the photo arrives (the model loads in
+     * parallel), answer the spoken question or the default description, then offer follow-ups
+     * about the same photo until the user stays silent.
+     */
     private suspend fun answerImageQuestion(image: ByteArray) {
-        val question = sharedDefaultImageQuestion()
-        updateState { it.copy(agentLastError = "Analyzing the glasses photo…") }
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
-        val reply = runCatching { imageAiService.analyzeImage(image, question) }
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
-        deliverAnswer("📷 $question", reply)
+        scope.launch { IosLocalModels.preload() }
+        updateState { it.copy(agentLastError = "Ask about the photo now, or wait for the description…") }
+        val spoken = pendingImageQuestion?.also { pendingImageQuestion = null }?.await()
+            ?: IosVoiceQuestion.ask(IMAGE_QUESTION_INITIAL_LISTENING_MS)
+        var question = spoken ?: sharedDefaultImageQuestion()
+        repeat(MAX_IMAGE_FOLLOW_UPS + 1) { round ->
+            updateState { it.copy(agentLastError = "Analyzing the photo: $question") }
+            val reply = speakAnswer { onToken ->
+                if (IosLocalModels.isActive && !IosRemoteModelSettings.isActive) {
+                    IosLocalModels.describeImage(image, question, onToken)
+                } else {
+                    imageAiService.analyzeImage(image, question)
+                }
+            }
+            deliverAnswer("📷 $question", reply)
+            if (reply.isFailure) return
+            question = IosVoiceQuestion.ask(IMAGE_QUESTION_INITIAL_LISTENING_MS) ?: return
+        }
     }
 
     private suspend fun answerVoiceQuestion() {
+        scope.launch { IosLocalModels.preload() }
         updateState { it.copy(agentLastError = "Listening… ask your question") }
-        val recording = IosChatPlatform.recordVoiceQuestion(VOICE_QUESTION_WINDOW_MS) {
-            updateState { it.copy(agentLastError = "The glasses mic was silent. Ask again into the iPhone…") }
-        }
-        if (recording == null) {
-            updateState { it.copy(agentLastError = "Microphone access is needed for voice questions") }
-            return
-        }
-        val audio = recording.audio
-        updateState { it.copy(agentLastError = "Transcribing (${recording.source})…") }
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
-        val question = runCatching { voiceAiService.transcribe(audio, SharedChatHooks.audioMimeType) }.getOrNull()
+        val question = IosVoiceQuestion.ask(VOICE_QUESTION_INITIAL_LISTENING_MS)
         if (question.isNullOrBlank()) {
-            vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
-            updateState { it.copy(agentLastError = "Could not understand the question") }
+            updateState { it.copy(agentLastError = "No question heard. Tap Test voice and speak after \"${IosChatPlatform.questionCue()}\"") }
             return
         }
-        val reply = runCatching {
-            chatAiService.chat(listOf(com.fersaiyan.cyanbridge.shared.ai.ChatMessage("user", question))).message.content
+        updateState { it.copy(agentLastError = "You asked: $question") }
+        val reply = speakAnswer { onToken ->
+            if (IosLocalModels.isActive && !IosRemoteModelSettings.isActive) {
+                IosLocalModels.chat(listOf(com.fersaiyan.cyanbridge.shared.ai.ChatMessage("user", question)), onToken = onToken)
+            } else {
+                chatAiService.chat(listOf(com.fersaiyan.cyanbridge.shared.ai.ChatMessage("user", question))).message.content
+            }
         }
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
         deliverAnswer(question, reply)
     }
 
-    /** Speaks the reply through the glasses audio and keeps it in the "Glasses" chat. */
+    /**
+     * Runs [generate] and speaks the reply through the glasses while it streams (on-device
+     * models stream tokens; remote/relay replies are spoken chunk by chunk when they arrive).
+     */
+    private suspend fun speakAnswer(generate: suspend (onToken: (String) -> Unit) -> String): Result<String> {
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
+        var speaking = false
+        val speech = IosStreamingSpeech(onFirstChunk = {
+            speaking = true
+            scope.launch {
+                vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
+                vendor?.awaitAiSpeakMode(VendorAiSpeakMode.START)
+            }
+        })
+        var streamed = false
+        val reply = runCatching {
+            generate { token ->
+                streamed = true
+                speech.append(token)
+            }
+        }.mapCatching { text ->
+            if (text.startsWith("Error:")) error(text.removePrefix("Error:").trim())
+            text
+        }
+        reply.onSuccess { text -> if (!streamed) speech.append(text) }.onFailure { speech.cancel() }
+        if (reply.isSuccess) speech.finish()
+        if (!speaking) vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_STOP)
+        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.STOP)
+        PlatformLogger.i("IosGlassesAssistant", reply.fold({ "Answer: $it" }, { "Answer failed: ${it.message}" }))
+        return reply
+    }
+
+    /** Shows the reply and keeps it in the "Glasses" chat (it was already spoken by speakAnswer). */
     private suspend fun deliverAnswer(question: String, reply: Result<String>) {
         val answer = reply.getOrElse { error ->
             updateState { it.copy(agentLastError = "AI request failed: ${error.message ?: "unknown error"}") }
             return
         }
         updateState { it.copy(agentLastError = answer) }
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.START)
-        IosChatPlatform.speak(answer)
-        vendor?.awaitAiSpeakMode(VendorAiSpeakMode.STOP)
         val now = platformCurrentTimeMillis()
         if (chatRepository.getChat(GLASSES_CHAT_ID) == null) {
             chatRepository.insertChat(ChatEntity(id = GLASSES_CHAT_ID, title = "Glasses", createdAt = now, updatedAt = now))

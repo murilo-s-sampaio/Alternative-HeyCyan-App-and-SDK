@@ -189,7 +189,7 @@ object IosChatPlatform {
         ((NSLocale.preferredLanguages.firstOrNull() as? String) ?: "en").substringBefore('-').lowercase()
 
     /** HFP takes a moment to switch the route after setPreferredInput. */
-    private suspend fun awaitBluetoothInput() {
+    internal suspend fun awaitBluetoothInput() {
         repeat(25) {
             if (currentInputName(onlyBluetooth = true) != null) return
             delay(100L)
@@ -197,7 +197,7 @@ object IosChatPlatform {
         PlatformLogger.w(TAG, "Glasses microphone route did not become active")
     }
 
-    private fun currentInputName(onlyBluetooth: Boolean = false): String? =
+    internal fun currentInputName(onlyBluetooth: Boolean = false): String? =
         AVAudioSession.sharedInstance().currentRoute.inputs
             .filterIsInstance<AVAudioSessionPortDescription>()
             .firstOrNull { !onlyBluetooth || it.portType == AVAudioSessionPortBluetoothHFP }
@@ -225,25 +225,43 @@ object IosChatPlatform {
 
     /** Speaks through the current route (the glasses when connected) and waits until done. */
     suspend fun speak(text: String) {
+        enqueueSpeech(text)
+        awaitSpeechDone()
+    }
+
+    /** Queues one utterance; AVSpeechSynthesizer plays queued utterances back to back. */
+    fun enqueueSpeech(text: String) {
         if (text.isBlank()) return
-        val session = AVAudioSession.sharedInstance()
-        session.setCategory(
-            AVAudioSessionCategoryPlayAndRecord,
-            withOptions = AVAudioSessionCategoryOptionAllowBluetooth or AVAudioSessionCategoryOptionDefaultToSpeaker,
-            error = null,
-        )
-        session.setActive(true, error = null)
+        if (speechDelegate.pending == 0) {
+            val session = AVAudioSession.sharedInstance()
+            session.setCategory(
+                AVAudioSessionCategoryPlayAndRecord,
+                withOptions = AVAudioSessionCategoryOptionAllowBluetooth or AVAudioSessionCategoryOptionDefaultToSpeaker,
+                error = null,
+            )
+            session.setActive(true, error = null)
+        }
         val utterance = AVSpeechUtterance.speechUtteranceWithString(text)
         (NSLocale.preferredLanguages.firstOrNull() as? String)?.let { language ->
             utterance.voice = AVSpeechSynthesisVoice.voiceWithLanguage(language)
                 ?: AVSpeechSynthesisVoice.voiceWithLanguage(language.substringBefore('-'))
         }
+        synthesizer.delegate = speechDelegate
+        speechDelegate.pending++
+        synthesizer.speakUtterance(utterance)
+    }
+
+    /** Suspends until every queued utterance finished (or was cancelled). */
+    suspend fun awaitSpeechDone() {
+        if (speechDelegate.pending == 0) return
         suspendCancellableCoroutine { continuation ->
-            speechDelegate.onFinished = { if (continuation.isActive) continuation.resume(Unit) }
-            synthesizer.delegate = speechDelegate
-            synthesizer.speakUtterance(utterance)
-            continuation.invokeOnCancellation { synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate) }
+            speechDelegate.idleWaiters += { if (continuation.isActive) continuation.resume(Unit) }
+            continuation.invokeOnCancellation { stopSpeaking() }
         }
+    }
+
+    fun stopSpeaking() {
+        synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate)
     }
 
     fun shareText(text: String) {
@@ -268,18 +286,26 @@ object IosChatPlatform {
 }
 
 private class SpeechDelegate : NSObject(), AVSpeechSynthesizerDelegateProtocol {
-    var onFinished: (() -> Unit)? = null
+    var pending = 0
+    val idleWaiters = mutableListOf<() -> Unit>()
+
+    private fun utteranceEnded() {
+        pending = maxOf(0, pending - 1)
+        if (pending == 0) {
+            val waiters = idleWaiters.toList()
+            idleWaiters.clear()
+            waiters.forEach { it() }
+        }
+    }
 
     @ObjCSignatureOverride
     override fun speechSynthesizer(synthesizer: AVSpeechSynthesizer, didFinishSpeechUtterance: AVSpeechUtterance) {
-        onFinished?.invoke()
-        onFinished = null
+        utteranceEnded()
     }
 
     @ObjCSignatureOverride
     override fun speechSynthesizer(synthesizer: AVSpeechSynthesizer, didCancelSpeechUtterance: AVSpeechUtterance) {
-        onFinished?.invoke()
-        onFinished = null
+        utteranceEnded()
     }
 }
 
