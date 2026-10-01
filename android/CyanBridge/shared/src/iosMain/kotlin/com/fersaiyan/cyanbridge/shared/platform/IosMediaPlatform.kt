@@ -33,12 +33,14 @@ import platform.QuickLook.QLPreviewItemProtocol
 import platform.UIKit.UIActivityViewController
 import platform.UIKit.UIAlertAction
 import platform.UIKit.UIAlertActionStyleCancel
+import platform.UIKit.UIAlertActionStyleDefault
 import platform.UIKit.UIAlertActionStyleDestructive
 import platform.UIKit.UIAlertController
 import platform.UIKit.UIAlertControllerStyleAlert
 import platform.UIKit.UIApplication
 import platform.UIKit.UIImage
 import platform.UIKit.UIImageJPEGRepresentation
+import platform.UIKit.UIPasteboard
 import platform.UIKit.UIViewController
 import platform.UIKit.popoverPresentationController
 import platform.darwin.NSInteger
@@ -141,6 +143,19 @@ object IosMediaPlatform {
             )
             presenter.presentViewController(alert, animated = true, completion = null)
         }
+
+    /** Shows a message with a button that copies [copyValue] (for example a hotspot password). */
+    fun showCopyAlert(title: String, message: String, copyTitle: String, copyValue: String) {
+        val presenter = topViewController() ?: return
+        val alert = UIAlertController.alertControllerWithTitle(title, message, UIAlertControllerStyleAlert)
+        alert.addAction(UIAlertAction.actionWithTitle("OK", UIAlertActionStyleCancel, handler = null))
+        alert.addAction(
+            UIAlertAction.actionWithTitle(copyTitle, UIAlertActionStyleDefault) { _ ->
+                UIPasteboard.generalPasteboard.string = copyValue
+            },
+        )
+        presenter.presentViewController(alert, animated = true, completion = null)
+    }
 
     fun readFile(path: String): ByteArray? = NSData.dataWithContentsOfFile(path)?.toKotlinBytes()
 

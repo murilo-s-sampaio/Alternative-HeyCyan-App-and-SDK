@@ -28,8 +28,6 @@ import platform.UIKit.UIAlertActionStyleCancel
 import platform.UIKit.UIAlertActionStyleDefault
 import platform.UIKit.UIAlertController
 import platform.UIKit.UIAlertControllerStyleAlert
-import platform.UIKit.UIApplication
-import platform.UIKit.UIApplicationOpenSettingsURLString
 import platform.UIKit.UIDevice
 import platform.UIKit.UIDocumentPickerDelegateProtocol
 import platform.UIKit.UIDocumentPickerViewController
@@ -79,10 +77,21 @@ class IosSettingsPlatform(
     private var pickerDelegate: DocumentPickerDelegate? = null
 
     override fun openAppLanguageSettings() {
-        // iOS keeps per-app language in the system Settings page for this app.
-        val url = NSURL(string = UIApplicationOpenSettingsURLString)
-        UIApplication.sharedApplication.openURL(url, options = emptyMap<Any?, Any?>(), completionHandler = null)
+        val presenter = IosMediaPlatform.topViewController() ?: return
+        val alert = UIAlertController.alertControllerWithTitle("Language", null, UIAlertControllerStyleAlert)
+        IosAppLanguage.options.forEach { option ->
+            val title = if (option.id == IosAppLanguage.selectedId) "✓ ${option.label}" else option.label
+            alert.addAction(
+                UIAlertAction.actionWithTitle(title, UIAlertActionStyleDefault) { _ -> IosAppLanguage.select(option.id) },
+            )
+        }
+        alert.addAction(UIAlertAction.actionWithTitle("Cancel", UIAlertActionStyleCancel, handler = null))
+        presenter.presentViewController(alert, animated = true, completion = null)
     }
+
+    override fun appLanguageLabel(): String = IosAppLanguage.selectedLabel
+
+    override fun openLocalModels() = IosRemoteModelSettings.open()
 
     override fun exportLocalData() {
         scope.launch {

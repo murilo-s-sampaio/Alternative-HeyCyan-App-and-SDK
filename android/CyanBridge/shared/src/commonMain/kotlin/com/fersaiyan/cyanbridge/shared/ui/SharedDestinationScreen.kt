@@ -517,12 +517,13 @@ private class SharedSettingsScreenActions(
     override fun stopMeetingCapture() { platform?.stopMeetingCapture() }
     override fun setProviderType(type: AgentProviderType) = update { it.copy(providerType = type) }
     override fun openTaskerIntegrations() = Unit
-    override fun openLocalModels() = Unit
+    override fun openLocalModels() { platform?.openLocalModels() }
 }
 
 internal const val SHARED_SETTINGS_PREFS = "cyanbridge_shared_settings"
 
 private fun loadSharedSettings(preferences: PlatformPreferences): SettingsUiState = SettingsUiState(
+    appLanguageLabel = SharedSettingsHooks.platform?.appLanguageLabel() ?: SettingsUiState().appLanguageLabel,
     providerType = AgentProviderType.valueOf(preferences.getString("provider_type", AgentProviderType.PRO_SUBSCRIPTION.name)),
     memoryMode = MemoryPrivacyMode.fromRaw(preferences.getString("memory_mode", MemoryPrivacyMode.PRIVATE_LOCAL.name)),
     syncExplicit = preferences.getBoolean("sync_explicit", true),

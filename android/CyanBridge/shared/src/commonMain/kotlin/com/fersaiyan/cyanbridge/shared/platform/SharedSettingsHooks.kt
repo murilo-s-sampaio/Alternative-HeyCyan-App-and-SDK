@@ -6,6 +6,12 @@ package com.fersaiyan.cyanbridge.shared.platform
  */
 interface SharedSettingsPlatform {
     fun openAppLanguageSettings()
+
+    /** Label of the chosen app language, shown on the Settings language card. */
+    fun appLanguageLabel(): String
+
+    /** Opens the provider configuration behind the "Local" AI option. */
+    fun openLocalModels()
     fun exportLocalData()
     fun importLocalData()
     fun importChatGptData()

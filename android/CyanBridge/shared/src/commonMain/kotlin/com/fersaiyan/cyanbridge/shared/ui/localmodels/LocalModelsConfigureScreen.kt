@@ -78,6 +78,8 @@ import com.fersaiyan.cyanbridge.shared.localmodels.LocalModelsSection
 fun LocalModelsConfigureScreen(
     state: LocalModelsConfigureUiState,
     onAction: (LocalModelsAction) -> Unit,
+    // Hosts without an on-device runtime (iOS) show only the remote server card.
+    remoteServerOnly: Boolean = false,
 ) {
     var showUnsavedChangesDialog by rememberSaveable { mutableStateOf(false) }
     val requestBack = {
@@ -89,7 +91,7 @@ fun LocalModelsConfigureScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
-                title = { Text("Local models") },
+                title = { Text(if (remoteServerOnly) "Custom AI provider" else "Local models") },
                 navigationIcon = {
                     IconButton(onClick = requestBack) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
@@ -120,7 +122,14 @@ fun LocalModelsConfigureScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
+            if (remoteServerOnly) item {
+                ScreenCard("Current model", hero = true) {
+                    Text(state.engineStatus, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    SupportingText(state.selectedModelStatus)
+                }
+            }
+
+            if (!remoteServerOnly) item {
                 ScreenCard("Current model", hero = true) {
                     Text(state.engineStatus, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     if (state.deviceSummary.isNotBlank()) SupportingText(state.deviceSummary)
@@ -160,7 +169,7 @@ fun LocalModelsConfigureScreen(
                 }
             }
 
-            item {
+            if (!remoteServerOnly) item {
                 ScreenCard("Performance") {
                     val generation = state.generation
                     ChoiceField(
@@ -191,7 +200,7 @@ fun LocalModelsConfigureScreen(
                 }
             }
 
-            item {
+            if (!remoteServerOnly) item {
                 ScreenCard("Assistant behavior") {
                     Text(
                         "This prompt is sent to the selected local model. Keep the short-first instruction for faster spoken responses, or customize it for your use case.",
@@ -214,7 +223,7 @@ fun LocalModelsConfigureScreen(
                 }
             }
 
-            item {
+            if (!remoteServerOnly) item {
                 ExpandableCard(
                     title = "Curated models",
                     expanded = state.catalogExpanded,
@@ -299,7 +308,7 @@ fun LocalModelsConfigureScreen(
                 }
             }
 
-            item {
+            if (!remoteServerOnly) item {
                 ExpandableCard(
                     title = "CyanBridge Model Studio",
                     subtitle = "Connect to a model running on your other device",
@@ -332,7 +341,7 @@ fun LocalModelsConfigureScreen(
                 }
             }
 
-            item {
+            if (!remoteServerOnly) item {
                 ExpandableCard(
                     title = "Advanced options",
                     subtitle = "Runtime, context and sampling controls",

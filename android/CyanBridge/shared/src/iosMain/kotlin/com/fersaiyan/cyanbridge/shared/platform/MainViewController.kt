@@ -7,6 +7,7 @@ import androidx.compose.ui.window.ComposeUIViewController
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,7 +72,7 @@ import com.fersaiyan.cyanbridge.shared.ui.sharedDefaultImageQuestion
 import com.fersaiyan.cyanbridge.shared.persistence.ChatEntity
 import com.fersaiyan.cyanbridge.shared.persistence.ChatMessageEntity
 import com.fersaiyan.cyanbridge.shared.ui.DeviceBindScreen
-import com.fersaiyan.cyanbridge.shared.ui.onboarding.OnboardingLanguageOption
+import com.fersaiyan.cyanbridge.shared.ui.localmodels.LocalModelsConfigureScreen
 import com.fersaiyan.cyanbridge.shared.ui.onboarding.WelcomeScreen
 import com.fersaiyan.cyanbridge.shared.ui.theme.CyanBridgeMaterialTheme
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -100,12 +101,8 @@ import platform.NetworkExtension.NEHotspotConfigurationManager
 import platform.NetworkExtension.NEHotspotNetwork
 import platform.CoreBluetooth.CBAdvertisementDataServiceUUIDsKey
 import platform.CoreBluetooth.CBUUID
-import platform.Foundation.NSLocale
 import platform.Foundation.NSString
 import platform.Foundation.currentLocale
-import platform.Foundation.languageCode
-import platform.Foundation.localizedStringForLanguageCode
-import platform.Foundation.preferredLanguages
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.dataUsingEncoding
 import platform.Foundation.NSData
@@ -115,7 +112,8 @@ private const val DEFAULT_RELAY_URL = "https://cyanbridge.vercel.app"
 private const val IOS_TRANSFER_IP_TIMEOUT_MS = 15_000L
 private const val IOS_HOST_CREDENTIAL_TIMEOUT_MS = 10_000L
 private const val IOS_BLE_CONNECT_TIMEOUT_MS = 20_000L
-private const val IOS_MANUAL_JOIN_TIMEOUT_MS = 120_000L
+private const val IOS_MANUAL_JOIN_TIMEOUT_MS = 180_000L
+private const val HEYCYAN_DEFAULT_HOTSPOT_PASSWORD = "123456789"
 private const val IOS_GLASSES_PREFERENCES = "cyanbridge_ios_glasses"
 private const val PREF_AI_WAKE_ROUTE = "ai_wake_word_route"
 private const val PREF_THUMBNAIL_QUALITY = "image_thumbnail_quality"
@@ -192,20 +190,15 @@ private fun IosCyanBridgeApp(
     val onboardingPreferences = remember { createPlatformPreferences("cyanbridge_onboarding") }
     var welcomeDone by remember { mutableStateOf(onboardingPreferences.getBoolean("welcome_done", false)) }
 
+    // Re-keying on the language rebuilds the tree so Compose resources pick up the new locale.
+    key(IosAppLanguage.selectedId) {
     CyanBridgeMaterialTheme(settings = appearanceSettings) {
         if (!welcomeDone) {
-            // iOS applies the app language from the system (Settings ▸ CyanBridge ▸ Language).
-            // The UI follows the preferred-language list, not the region locale.
-            val preferred = (NSLocale.preferredLanguages.firstOrNull() as? String) ?: NSLocale.currentLocale.languageCode
-            val languageName = NSLocale(localeIdentifier = preferred).localizedStringForLanguageCode(preferred)
-                ?.replaceFirstChar { it.uppercase() }
-                ?: "System language"
-            val systemLanguage = OnboardingLanguageOption(id = "system", label = languageName)
             WelcomeScreen(
-                languageOptions = listOf(systemLanguage),
-                selectedLanguageId = systemLanguage.id,
+                languageOptions = IosAppLanguage.options,
+                selectedLanguageId = IosAppLanguage.selectedId,
                 languageSelectionComplete = true,
-                onLanguageSelected = {},
+                onLanguageSelected = { option -> IosAppLanguage.select(option.id) },
                 onStartSetup = {
                     onboardingPreferences.putBoolean("welcome_done", true)
                     welcomeDone = true
@@ -249,7 +242,15 @@ private fun IosCyanBridgeApp(
                     onBack = { controller.closeDeviceBind() },
                 )
             }
+            if (IosRemoteModelSettings.isOpen) {
+                LocalModelsConfigureScreen(
+                    state = IosRemoteModelSettings.uiState,
+                    onAction = IosRemoteModelSettings::handle,
+                    remoteServerOnly = true,
+                )
+            }
         }
+    }
     }
 }
 
@@ -477,9 +478,10 @@ private class IosAppController {
     val memoryVaultRepository = IosMemoryVaultRepository()
     val mediaRecordRepository = IosMediaRecordRepository()
     private val mediaTransfer = IosMediaTransfer(mediaRecordRepository)
-    private val chatAiService = IosRelayChatAiService()
-    private val voiceAiService = IosRelayVoiceAiService()
-    private val imageAiService = IosRelayImageAiService()
+    // The "Local" custom provider (Settings ▸ Custom AI provider) overrides the relay when enabled.
+    private val chatAiService = IosRoutedChatAiService(IosRelayChatAiService())
+    private val voiceAiService = IosRoutedVoiceAiService(IosRelayVoiceAiService())
+    private val imageAiService = IosRoutedImageAiService(IosRelayImageAiService())
     private val meetingRecorder = IosMeetingRecorder(voiceAiService, chatAiService, notesRepository)
     private val eyevue = IosEyevueSession(
         bleManager = bleManager,
@@ -527,14 +529,10 @@ private class IosAppController {
     init {
         bleManager.addNotificationListener(object : BleNotificationListener {
             override fun onNotification(characteristicId: String, data: ByteArray) {
-                extractGlassesIp(data)?.let { ip ->
-                    wifiP2pManager.setGlassesIpAddress(ip)
-                    updateState { state ->
-                        state.copy(
-                            transfer = state.transfer.copy(detail = "Glasses IP: $ip"),
-                        )
-                    }
-                }
+                // With QCSDK attached the sync flow resolves the IP itself; raw vendor
+                // frames are offset differently on iOS and decode to bogus addresses.
+                if (vendor != null) return
+                extractGlassesIp(data)?.let(wifiP2pManager::setGlassesIpAddress)
             }
         })
         IosMediaPlatform.installSharedMediaHooks()
@@ -1117,39 +1115,55 @@ private class IosAppController {
             }
 
             detail("Waiting for the glasses hotspot ${credentials.ssid}")
-            var ip: String? = null
+            var reportedIp: String? = null
             for (attempt in 1..10) {
-                ip = bridge.awaitWifiIp()
-                if (ip != null) break
+                reportedIp = bridge.awaitWifiIp()
+                if (reportedIp != null) break
                 delay(2_000L)
             }
-            if (ip == null) {
+            if (reportedIp == null) {
                 detail("The glasses hotspot did not report an IP address. Retry sync.")
                 return@launch
             }
-            wifiP2pManager.setGlassesIpAddress(ip)
-            IosTransferModeConfiguration.configurePreparedHotspot(credentials.ssid, credentials.passphrase, ip)
+            PlatformLogger.i(
+                "IosGlassesSync",
+                "Transfer hotspot ${credentials.ssid} (password ${credentials.passphrase.length} chars), QCSDK IP $reportedIp",
+            )
+            val candidates = glassesIpCandidates(reportedIp)
+            IosTransferModeConfiguration.configurePreparedHotspot(credentials.ssid, credentials.passphrase, candidates.first())
 
-            if (!mediaTransfer.isReachable(ip)) {
+            var ip = firstReachableIp(candidates)
+            if (ip == null) {
                 val joinError = wifiP2pManager.requestHotspotJoin(credentials.ssid, credentials.passphrase)
                 if (joinError == null) {
                     detail("Joining ${credentials.ssid}")
                 } else {
                     // Free-account builds cannot join automatically; the user joins in Settings.
-                    detail(
-                        "Open Settings ▸ Wi-Fi and join:\n${credentials.ssid}\n" +
-                            "Password: ${credentials.passphrase.ifBlank { "(none)" }}\n\nThen return to CyanBridge.",
+                    val password = credentials.passphrase.ifBlank { HEYCYAN_DEFAULT_HOTSPOT_PASSWORD }
+                    val instructions = "Open Settings ▸ Wi-Fi and join:\n${credentials.ssid}\n" +
+                        "Password: $password\n(if rejected, try $HEYCYAN_DEFAULT_HOTSPOT_PASSWORD)\n\nThen return to CyanBridge."
+                    detail(instructions)
+                    IosMediaPlatform.showCopyAlert(
+                        title = "Join the glasses Wi-Fi",
+                        message = instructions,
+                        copyTitle = "Copy password",
+                        copyValue = password,
                     )
                 }
-                val reachable = withTimeoutOrNull(IOS_MANUAL_JOIN_TIMEOUT_MS) {
-                    while (!mediaTransfer.isReachable(ip)) delay(3_000L)
-                    true
-                } ?: false
-                if (!reachable) {
-                    detail("Could not reach the glasses at $ip. Join ${credentials.ssid} and retry sync.")
+                ip = withTimeoutOrNull(IOS_MANUAL_JOIN_TIMEOUT_MS) {
+                    var found: String? = null
+                    while (found == null) {
+                        found = firstReachableIp(candidates)
+                        if (found == null) delay(3_000L)
+                    }
+                    found
+                }
+                if (ip == null) {
+                    detail("Could not reach the glasses (tried ${candidates.joinToString()}). Join ${credentials.ssid} and retry sync.")
                     return@launch
                 }
             }
+            wifiP2pManager.setGlassesIpAddress(ip)
             wifiP2pManager.markConnected()
 
             detail("Downloading media.config")
@@ -1501,6 +1515,24 @@ private class IosAppController {
             )
         }
     }
+
+    /**
+     * QCSDK reports the hotspot IP rotated by one octet (for example 3.192.168.31);
+     * the vendor demo probes common hotspot addresses for the same reason.
+     */
+    private fun glassesIpCandidates(reportedIp: String): List<String> {
+        val octets = reportedIp.split('.').mapNotNull { it.toIntOrNull() }
+        val candidates = mutableListOf<String>()
+        if (octets.size == 4) {
+            if (octets[0] in setOf(10, 172, 192)) candidates += reportedIp
+            if (octets[1] in setOf(10, 172, 192)) candidates += (octets.drop(1) + octets[0]).joinToString(".")
+        }
+        candidates += listOf("192.168.31.1", reportedIp, "192.168.43.1", "192.168.4.1")
+        return candidates.distinct()
+    }
+
+    private suspend fun firstReachableIp(candidates: List<String>): String? =
+        candidates.firstOrNull { mediaTransfer.isReachable(it) }
 
     private fun extractGlassesIp(data: ByteArray): String? {
         if (data.size >= 11 && data[6].toInt() and 0xFF == 0x08) {

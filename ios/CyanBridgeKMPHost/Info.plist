@@ -4,14 +4,31 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>pt-BR</string>
+		<string>es</string>
+		<string>de</string>
+		<string>fr</string>
+		<string>it</string>
+		<string>zh-Hans</string>
+		<string>ko</string>
+		<string>ru</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>CyanBridge records voice questions and audio messages when you ask it to.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>CyanBridge plugins turn what the glasses microphone hears into captions, translations, notes and reminders.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>CyanBridge lets you attach photos to chats.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>CyanBridge saves photos and videos imported from your glasses to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>CyanBridge lets you attach photos to chats.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>CyanBridge plugins turn what the glasses microphone hears into captions, translations, notes and reminders.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

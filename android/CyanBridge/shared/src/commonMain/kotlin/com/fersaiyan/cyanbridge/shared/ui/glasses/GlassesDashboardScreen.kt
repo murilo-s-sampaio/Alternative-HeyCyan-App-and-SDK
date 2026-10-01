@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
@@ -564,6 +565,7 @@ private fun StatusCard(state: GlassesDashboardUiState) {
             )
             BoxWithConstraints {
                 val hasMetrics = state.showBattery || state.showStorage
+                val metricsMaxWidth = maxWidth * 0.5f
                 if (hasMetrics && maxWidth < 300.dp) {
                     Column {
                         StatusIdentity(state)
@@ -571,9 +573,13 @@ private fun StatusCard(state: GlassesDashboardUiState) {
                         StatusMetrics(state, Alignment.Start)
                     }
                 } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                         StatusIdentity(state, Modifier.weight(1f))
-                        if (hasMetrics) StatusMetrics(state, Alignment.End)
+                        // Cap the metrics so long storage labels wrap instead of squeezing the device name.
+                        if (hasMetrics) StatusMetrics(state, Alignment.End, Modifier.widthIn(max = metricsMaxWidth))
                     }
                 }
             }
@@ -613,9 +619,10 @@ private fun StatusIdentity(
 private fun StatusMetrics(
     state: GlassesDashboardUiState,
     horizontalAlignment: Alignment.Horizontal,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
-        modifier = Modifier.testTag("dashboard_status_metrics"),
+        modifier = modifier.testTag("dashboard_status_metrics"),
         color = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
         shape = MaterialTheme.shapes.large,
