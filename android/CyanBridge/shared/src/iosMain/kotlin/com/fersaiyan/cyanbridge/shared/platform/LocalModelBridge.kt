@@ -23,13 +23,15 @@ interface LocalModelBridge {
     fun load(path: String, useGpu: Boolean, contextTokens: Int, completion: LocalModelResultCallback)
 
     /**
-     * [messagesJson] is a JSON array of {"role","content"}. Tokens stream through [onToken];
-     * the completion carries the full reply or the error.
+     * [messagesJson] is a JSON array of {"role","content"}. [imagePath] (empty for none) attaches
+     * an image to the last message. Tokens stream through [onToken]; the completion carries the
+     * full reply or the error.
      */
     fun generate(
         messagesJson: String,
         systemPrompt: String,
         maxTokens: Int,
+        imagePath: String,
         onToken: LocalModelTokenCallback,
         completion: LocalModelResultCallback,
     )
@@ -56,10 +58,11 @@ internal suspend fun LocalModelBridge.awaitGenerate(
     messagesJson: String,
     systemPrompt: String,
     maxTokens: Int,
+    imagePath: String = "",
     onToken: (String) -> Unit,
 ): Result<String> = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
-    generate(messagesJson, systemPrompt, maxTokens, { onToken(it) }) { success, message ->
+    generate(messagesJson, systemPrompt, maxTokens, imagePath, { onToken(it) }) { success, message ->
         if (continuation.isActive) {
             continuation.resume(if (success) Result.success(message) else Result.failure(IllegalStateException(message)))
         }

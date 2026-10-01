@@ -232,6 +232,7 @@ private fun IosCyanBridgeApp(
                 useSharedDestinations = true,
                 proSubscriptionState = IOS_PRO_SUBSCRIPTION_STATE,
                 onProSubscriptionAction = ::iosProSubscriptionActionStatus,
+                hiddenDestinations = setOf(AppDestination.PLUGINS),
             )
             // Android opens DeviceBindActivity for Scan; iOS shows the same shared screen on top.
             deviceBindState?.let { bind ->
@@ -518,6 +519,7 @@ private class IosAppController {
         GlassesDashboardUiState(
             connectionLabel = "Bluetooth unavailable",
             agentStatus = "iOS shared host",
+            showExternalAutomationSetup = false,
         ),
     )
     val dashboardState: StateFlow<GlassesDashboardUiState> = _dashboardState.asStateFlow()
@@ -1065,11 +1067,15 @@ private class IosAppController {
 
     private suspend fun answerVoiceQuestion() {
         updateState { it.copy(agentLastError = "Listening… ask your question") }
-        val audio = IosChatPlatform.recordFor(VOICE_QUESTION_WINDOW_MS)
-        if (audio == null) {
+        val recording = IosChatPlatform.recordVoiceQuestion(VOICE_QUESTION_WINDOW_MS) {
+            updateState { it.copy(agentLastError = "The glasses mic was silent. Ask again into the iPhone…") }
+        }
+        if (recording == null) {
             updateState { it.copy(agentLastError = "Microphone access is needed for voice questions") }
             return
         }
+        val audio = recording.audio
+        updateState { it.copy(agentLastError = "Transcribing (${recording.source})…") }
         vendor?.awaitAiSpeakMode(VendorAiSpeakMode.THINKING_START)
         val question = runCatching { voiceAiService.transcribe(audio, SharedChatHooks.audioMimeType) }.getOrNull()
         if (question.isNullOrBlank()) {

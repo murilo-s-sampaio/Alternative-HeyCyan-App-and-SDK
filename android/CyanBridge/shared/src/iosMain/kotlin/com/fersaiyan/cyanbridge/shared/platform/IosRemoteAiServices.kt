@@ -271,7 +271,8 @@ internal class IosRoutedImageAiService(private val relay: ImageAiService) : Imag
     override suspend fun analyzeImage(imageData: ByteArray, prompt: String, mimeType: String): String {
         if (!IosRemoteModelSettings.isActive) {
             if (IosLocalModels.isActive) {
-                return "On-device image questions are not supported yet. Use a remote vision model or the relay."
+                return runCatching { IosLocalModels.describeImage(imageData, prompt) }
+                    .getOrElse { "Error: ${it.message ?: "on-device model failed"}" }
             }
             return relay.analyzeImage(imageData, prompt, mimeType)
         }

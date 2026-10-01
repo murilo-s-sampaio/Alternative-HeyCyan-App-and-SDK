@@ -917,13 +917,15 @@ private fun GlassesAssistantControls(
                 }
             }
         }
-        OutlinedButton(
-            onClick = { onAction(GlassesDashboardAction.OpenExternalImageAutomationDiagnostics) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 48.dp),
-        ) {
-            Text(stringResource(Res.string.dashboard_gemini_chatgpt_setup))
+        if (state.showExternalAutomationSetup) {
+            OutlinedButton(
+                onClick = { onAction(GlassesDashboardAction.OpenExternalImageAutomationDiagnostics) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+            ) {
+                Text(stringResource(Res.string.dashboard_gemini_chatgpt_setup))
+            }
         }
     }
 }

@@ -31,6 +31,7 @@ final class LocalModelBridgeImpl: NSObject, LocalModelBridge {
         messagesJson: String,
         systemPrompt: String,
         maxTokens: Int32,
+        imagePath: String,
         onToken: LocalModelTokenCallback,
         completion: LocalModelResultCallback
     ) {
@@ -40,7 +41,8 @@ final class LocalModelBridgeImpl: NSObject, LocalModelBridge {
                 let reply = try await worker.generate(
                     messages: messages,
                     systemPrompt: systemPrompt,
-                    maxTokens: Int(maxTokens)
+                    maxTokens: Int(maxTokens),
+                    imagePath: imagePath.isEmpty ? nil : imagePath
                 ) { piece in
                     DispatchQueue.main.async { onToken.onToken(text: piece) }
                 }
@@ -91,12 +93,19 @@ private actor LocalModelWorker {
         messages: [LocalChatMessage],
         systemPrompt: String,
         maxTokens: Int,
+        imagePath: String?,
         onToken: @escaping (String) -> Void
     ) async throws -> String {
         guard let model else { throw LocalModelError.generationFailed("no model is loaded") }
         active = model
         defer { active = nil }
-        return try await model.generate(messages: messages, systemPrompt: systemPrompt, maxTokens: maxTokens, onToken: onToken)
+        return try await model.generate(
+            messages: messages,
+            systemPrompt: systemPrompt,
+            maxTokens: maxTokens,
+            imagePath: imagePath,
+            onToken: onToken
+        )
     }
 
     nonisolated func cancelCurrent() {

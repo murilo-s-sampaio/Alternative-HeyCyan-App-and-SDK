@@ -11,6 +11,8 @@ import platform.AVFAudio.AVAudioSessionCategoryOptionAllowBluetooth
 import platform.AVFAudio.AVAudioSessionCategoryOptionDefaultToSpeaker
 import platform.AVFAudio.AVAudioSessionCategoryPlayAndRecord
 import platform.AVFAudio.AVAudioSessionPortBluetoothHFP
+import platform.AVFAudio.AVAudioSessionPortBuiltInMic
+import platform.AVFAudio.currentRoute
 import platform.AVFAudio.AVAudioSessionPortDescription
 import platform.AVFAudio.AVFormatIDKey
 import platform.AVFAudio.AVNumberOfChannelsKey
@@ -28,9 +30,8 @@ import platform.Foundation.NSData
 import platform.Foundation.NSLocale
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
-import platform.Foundation.currentLocale
 import platform.Foundation.dataWithContentsOfURL
-import platform.Foundation.languageCode
+import platform.Foundation.preferredLanguages
 import platform.PhotosUI.PHPickerConfiguration
 import platform.PhotosUI.PHPickerFilter
 import platform.PhotosUI.PHPickerResult
@@ -50,6 +51,9 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 object IosChatPlatform {
     private const val MAX_IMAGE_SIDE = 1600.0
+    private const val TAG = "IosChatPlatform"
+    /** Peak level below this is treated as silence (speech near a mic peaks around -20 dB). */
+    private const val SILENCE_DB = -42f
     private var pickerDelegate: ImagePickerDelegate? = null
     private var recorder: AVAudioRecorder? = null
     private var recordingUrl: NSURL? = null
@@ -139,10 +143,84 @@ object IosChatPlatform {
     }
 
     /** Records for a fixed window; used by the glasses voice-question flow. */
-    suspend fun recordFor(millis: Long): ByteArray? {
-        if (!startRecording()) return null
-        delay(millis)
-        return stopRecording()
+    suspend fun recordFor(millis: Long): ByteArray? = recordVoiceQuestion(millis, onRetryWithPhoneMic = {})?.audio
+
+    class VoiceRecording(val audio: ByteArray, val source: String, val peakDb: Float)
+
+    /**
+     * Records a voice question from the glasses' Bluetooth (HFP) mic, waiting for the route to
+     * come up first. If that mic only captured silence, [onRetryWithPhoneMic] runs and the
+     * question is recorded again with the iPhone microphone.
+     */
+    suspend fun recordVoiceQuestion(millis: Long, onRetryWithPhoneMic: () -> Unit): VoiceRecording? {
+        if (!requestMicrophonePermission()) return null
+        val wantsGlassesMic = configureRecordingSession() != "iPhone microphone"
+        if (wantsGlassesMic) awaitBluetoothInput()
+        // Spoken cue through the glasses (Android: ImageQuestionDefaults.questionCueForLanguage).
+        speak(questionCue())
+        val first = recordMetered(millis) ?: return null
+        PlatformLogger.i(TAG, "Voice question: ${first.source}, peak ${first.peakDb.toInt()} dB, ${first.audio.size} bytes")
+        if (first.peakDb > SILENCE_DB || !wantsGlassesMic) return first
+        onRetryWithPhoneMic()
+        val session = AVAudioSession.sharedInstance()
+        session.availableInputs?.filterIsInstance<AVAudioSessionPortDescription>()
+            ?.firstOrNull { it.portType == AVAudioSessionPortBuiltInMic }
+            ?.let { session.setPreferredInput(it, error = null) }
+        speak(questionCue())
+        val second = recordMetered(millis) ?: return first
+        PlatformLogger.i(TAG, "Voice question retry: ${second.source}, peak ${second.peakDb.toInt()} dB")
+        return second
+    }
+
+    /** Same short prompts as Android's questionCueForLanguage, in the app language. */
+    fun questionCue(): String = when (preferredLanguageCode()) {
+        "pt" -> "Pergunte."
+        "es" -> "Pregunta."
+        "de" -> "Frag."
+        "fr" -> "Demandez."
+        "it" -> "Chiedi."
+        "zh" -> "请提问。"
+        "ko" -> "질문하세요."
+        "ru" -> "Спросите."
+        else -> "Ask."
+    }
+
+    private fun preferredLanguageCode(): String =
+        ((NSLocale.preferredLanguages.firstOrNull() as? String) ?: "en").substringBefore('-').lowercase()
+
+    /** HFP takes a moment to switch the route after setPreferredInput. */
+    private suspend fun awaitBluetoothInput() {
+        repeat(25) {
+            if (currentInputName(onlyBluetooth = true) != null) return
+            delay(100L)
+        }
+        PlatformLogger.w(TAG, "Glasses microphone route did not become active")
+    }
+
+    private fun currentInputName(onlyBluetooth: Boolean = false): String? =
+        AVAudioSession.sharedInstance().currentRoute.inputs
+            .filterIsInstance<AVAudioSessionPortDescription>()
+            .firstOrNull { !onlyBluetooth || it.portType == AVAudioSessionPortBluetoothHFP }
+            ?.portName
+
+    private suspend fun recordMetered(millis: Long): VoiceRecording? {
+        val url = NSURL.fileURLWithPath(NSTemporaryDirectory() + "cyanbridge-voice.m4a")
+        val audioRecorder = AVAudioRecorder(uRL = url, settings = aacRecordingSettings(), error = null)
+        audioRecorder.meteringEnabled = true
+        if (!audioRecorder.record()) return null
+        val source = currentInputName() ?: "unknown input"
+        var peak = -160f
+        var elapsed = 0L
+        while (elapsed < millis) {
+            delay(100L)
+            elapsed += 100L
+            audioRecorder.updateMeters()
+            peak = maxOf(peak, audioRecorder.peakPowerForChannel(0u))
+        }
+        audioRecorder.stop()
+        delay(150L) // let AVAudioRecorder finalize the file
+        val audio = NSData.dataWithContentsOfURL(url)?.toKotlinBytes() ?: return null
+        return VoiceRecording(audio, source, peak)
     }
 
     /** Speaks through the current route (the glasses when connected) and waits until done. */
@@ -156,8 +234,9 @@ object IosChatPlatform {
         )
         session.setActive(true, error = null)
         val utterance = AVSpeechUtterance.speechUtteranceWithString(text)
-        NSLocale.currentLocale.languageCode?.let { language ->
+        (NSLocale.preferredLanguages.firstOrNull() as? String)?.let { language ->
             utterance.voice = AVSpeechSynthesisVoice.voiceWithLanguage(language)
+                ?: AVSpeechSynthesisVoice.voiceWithLanguage(language.substringBefore('-'))
         }
         suspendCancellableCoroutine { continuation ->
             speechDelegate.onFinished = { if (continuation.isActive) continuation.resume(Unit) }

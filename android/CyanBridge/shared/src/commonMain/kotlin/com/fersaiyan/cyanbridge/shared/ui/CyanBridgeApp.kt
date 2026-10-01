@@ -55,8 +55,11 @@ fun CyanBridgeApp(
     useSharedDestinations: Boolean = false,
     proSubscriptionState: ProSubscriptionUiState = ProSubscriptionUiState(),
     onProSubscriptionAction: (ProSubscriptionAction) -> String = ::unavailableProSubscriptionStatus,
+    hiddenDestinations: Set<AppDestination> = emptySet(),
 ) {
-    var currentDestination by remember(initialDestination) { mutableStateOf(initialDestination) }
+    var currentDestination by remember(initialDestination) {
+        mutableStateOf(initialDestination.takeUnless { it in hiddenDestinations } ?: AppDestination.GLASSES)
+    }
     var showAppearance by remember { mutableStateOf(false) }
     var localAppearance by remember(appearanceSettings) { mutableStateOf(appearanceSettings) }
 
@@ -75,11 +78,15 @@ fun CyanBridgeApp(
             onBack = { showAppearance = false },
         )
     } else {
+        val show: (AppDestination) -> Unit = { destination ->
+            if (destination !in hiddenDestinations) currentDestination = destination
+        }
         CyanBridgeNavShell(
             currentDestination = currentDestination,
+            hiddenDestinations = hiddenDestinations,
             onNavigate = { destination ->
                 if (useSharedDestinations) {
-                    currentDestination = destination
+                    show(destination)
                 } else if (destination == AppDestination.GLASSES) {
                     currentDestination = destination
                 } else {
@@ -93,7 +100,7 @@ fun CyanBridgeApp(
                         state = dashboardState,
                         onAction = { action ->
                             if (useSharedDestinations && action is GlassesDashboardAction.Navigate) {
-                                currentDestination = action.destination
+                                show(action.destination)
                             } else {
                                 onDashboardAction(action)
                             }
@@ -114,7 +121,7 @@ fun CyanBridgeApp(
                 -> if (useSharedDestinations) {
                     SharedDestinationScreen(
                         destination = destination,
-                        onDestinationSelected = { currentDestination = it },
+                        onDestinationSelected = show,
                         onOpenAppearance = { showAppearance = true },
                         proSubscriptionState = proSubscriptionState,
                         onProSubscriptionAction = onProSubscriptionAction,

@@ -4,6 +4,8 @@ import llama
 /// GGUF models through the llama.cpp C API (Android: LlamaCppLocalInferenceEngine).
 final class LlamaTextModel: LocalTextModel, @unchecked Sendable {
     let runtime = LocalModelRuntime.llamaCpp
+    /// CyanBridge's llama.cpp path is text-only (no mtmd projector yet).
+    let supportsImages = false
 
     private static let backendInit: Void = llama_backend_init()
 
@@ -64,9 +66,13 @@ final class LlamaTextModel: LocalTextModel, @unchecked Sendable {
         messages: [LocalChatMessage],
         systemPrompt: String,
         maxTokens: Int,
+        imagePath: String?,
         onToken: @escaping (String) -> Void
     ) async throws -> String {
-        try await Task.detached(priority: .userInitiated) { [self] in
+        if imagePath != nil {
+            throw LocalModelError.generationFailed("llama.cpp models in CyanBridge are text-only. Use a LiteRT-LM vision model such as Gemma 4.")
+        }
+        return try await Task.detached(priority: .userInitiated) { [self] in
             try generateBlocking(messages: messages, systemPrompt: systemPrompt, maxTokens: maxTokens, onToken: onToken)
         }.value
     }

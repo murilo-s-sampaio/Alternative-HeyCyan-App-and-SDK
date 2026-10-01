@@ -30,11 +30,13 @@ import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.put
 import platform.Foundation.NSApplicationSupportDirectory
+import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSize
 import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSNumber
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
+import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSURLSession
@@ -147,7 +149,22 @@ object IosLocalModels {
 
     // ── Inference ──
 
-    suspend fun chat(messages: List<ChatMessage>, onToken: (String) -> Unit = {}): String = runMutex.withLock {
+    /** Describes a glasses photo with the selected model (LiteRT-LM vision models such as Gemma 4). */
+    suspend fun describeImage(image: ByteArray, prompt: String): String {
+        val path = "${NSTemporaryDirectory()}cyanbridge-image-question.jpg"
+        check(IosMediaPlatform.writeFile(path, image)) { "Could not prepare the photo" }
+        return try {
+            chat(listOf(ChatMessage("user", prompt)), imagePath = path)
+        } finally {
+            NSFileManager.defaultManager.removeItemAtPath(path, null)
+        }
+    }
+
+    suspend fun chat(
+        messages: List<ChatMessage>,
+        imagePath: String = "",
+        onToken: (String) -> Unit = {},
+    ): String = runMutex.withLock {
         val runtime = bridge ?: error("On-device runtimes are not available in this build")
         val name = selectedName ?: error("No on-device model selected")
         val path = pathOf(name)
@@ -170,7 +187,7 @@ object IosLocalModels {
                 }
             }
         }.toString()
-        val reply = runtime.awaitGenerate(messagesJson, systemPrompt, REPLY_TOKENS, onToken).getOrThrow()
+        val reply = runtime.awaitGenerate(messagesJson, systemPrompt, REPLY_TOKENS, imagePath, onToken).getOrThrow()
         refreshUi()
         stripReasoning(reply).ifBlank { error("The model returned an empty reply") }
     }
@@ -194,6 +211,13 @@ object IosLocalModels {
             runCatching { chat(listOf(ChatMessage("user", "What is the capital of France? Answer in one sentence."))) }
                 .onSuccess { PlatformLogger.i(TAG, "Self-test reply in ${started.elapsedNow()}: $it") }
                 .onFailure { PlatformLogger.e(TAG, "Self-test failed: ${it.message}") }
+            // Optional image check: put a JPEG at Documents/selftest.jpg.
+            val documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
+            val photo = IosMediaPlatform.readFile("$documents/selftest.jpg") ?: return@launch
+            val imageStarted = TimeSource.Monotonic.markNow()
+            runCatching { describeImage(photo, "Describe this image in one sentence.") }
+                .onSuccess { PlatformLogger.i(TAG, "Self-test image reply in ${imageStarted.elapsedNow()}: $it") }
+                .onFailure { PlatformLogger.e(TAG, "Self-test image failed: ${it.message}") }
         }
     }
 

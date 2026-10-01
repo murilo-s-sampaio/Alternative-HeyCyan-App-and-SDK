@@ -40,6 +40,8 @@ data class GlassesDashboardUiState(
     val showCaptureSettings: Boolean = false,
     val showMediaSync: Boolean = true,
     val showAiWakeWordRouting: Boolean = false,
+    /** The Gemini / ChatGPT image-automation setup button (Android-only external automation). */
+    val showExternalAutomationSetup: Boolean = true,
     val showAdvancedControls: Boolean = false,
     val showAdvancedLocalAgent: Boolean = false,
     val showAdvancedDeviceInfo: Boolean = false,

@@ -44,11 +44,16 @@ public enum LocalModelError: LocalizedError {
 public protocol LocalTextModel: AnyObject {
     var runtime: LocalModelRuntime { get }
 
+    /// True when the model was loaded with an image encoder (for example Gemma 4 on LiteRT-LM).
+    var supportsImages: Bool { get }
+
     /// Generates a reply to the last user message, streaming text pieces to [onToken].
+    /// [imagePath] attaches a JPEG/PNG to that message when the model supports images.
     func generate(
         messages: [LocalChatMessage],
         systemPrompt: String,
         maxTokens: Int,
+        imagePath: String?,
         onToken: @escaping (String) -> Void
     ) async throws -> String
 
